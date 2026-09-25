@@ -1,0 +1,58 @@
+# === AI DJ System — Scoring Weights Configuration ===
+# These weights control the deterministic song-scoring engine.
+# AI does NOT directly assign scores — it provides preferences that
+# feed into this deterministic formula.
+
+# --- Positive score component weights (must sum to ~1.0) ---
+positive_weights:
+  vibe_match: 0.20
+  energy_match: 0.15
+  genre_match: 0.10
+  language_match: 0.08
+  transition_score: 0.15
+  popularity: 0.05
+  event_type_match: 0.10
+  request_score: 0.05
+  crowd_feedback: 0.07
+  learned_preference: 0.05
+
+# --- Penalty weights (applied independently, subtracted) ---
+penalty_weights:
+  recency_penalty: 1.0
+  artist_repetition_penalty: 1.0
+  genre_repetition_penalty: 0.8
+  album_repetition_penalty: 0.6
+  energy_jump_penalty: 1.0
+  mood_jump_penalty: 0.9
+  bpm_jump_penalty: 0.7
+  explicit_penalty: 1.0
+  overplay_penalty: 0.8
+  transition_penalty: 1.0
+  low_historical_penalty: 0.5
+  duplicate_version_penalty: 1.0
+
+# --- Penalty thresholds ---
+penalty_thresholds:
+  recency_window: 20          # songs
+  artist_window: 4            # songs
+  genre_window: 5             # songs
+  album_window: 10            # songs
+  max_energy_jump: 0.25
+  max_mood_jump: 0.35
+  max_bpm_jump: 35
+  overplay_count: 3           # times played in event before penalty
+  recency_decay: exponential  # linear | exponential
+
+# --- Score normalization ---
+normalization:
+  min_score: 0.0
+  max_score: 100.0
+  scale_method: minmax        # minmax | zscore
+
+# --- Candidate generation ---
+candidates:
+  initial_pool_size: 200       # max songs from DB for candidate generation
+  policy_filtered_size: 100    # after policy filter
+  scoring_pool_size: 50        # sent to full scoring
+  ai_review_top_n: 10         # top N sent for AI review
+  final_selection_size: 5      # final queue candidates

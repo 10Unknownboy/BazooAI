@@ -1,0 +1,76 @@
+# === AI DJ System — Example Event Configuration ===
+
+event:
+  name: "College Freshers Party"
+  type: college_party
+  description: "Annual freshers welcome party"
+
+audience:
+  min_age: 17
+  max_age: 23
+  expected_count: 200
+
+duration_minutes: 240
+
+languages:
+  - Hindi
+  - Punjabi
+  - English
+
+region: North India
+
+music:
+  starting_vibe: chill
+  target_vibe: party
+  explicit_allowed: false
+  prefer_genres:
+    - Bollywood
+    - Punjabi Pop
+    - Hip Hop
+    - EDM
+  avoid_genres:
+    - Classical
+    - Ghazal
+  prefer_artists: []
+  avoid_artists: []
+
+energy_curve:
+  - time_minutes: 0
+    energy: 0.35
+  - time_minutes: 30
+    energy: 0.50
+  - time_minutes: 60
+    energy: 0.65
+  - time_minutes: 120
+    energy: 0.80
+  - time_minutes: 180
+    energy: 0.92
+  - time_minutes: 210
+    energy: 0.95
+  - time_minutes: 230
+    energy: 0.75
+  - time_minutes: 240
+    energy: 0.50
+
+requests:
+  allow_requests: true
+  mode: adaptive          # adaptive | strict | permissive
+  affect_vibe: true       # whether requests can change the overall vibe direction
+
+learning:
+  enabled: true
+  feedback_prompt: true   # prompt for feedback periodically
+
+audio:
+  lookahead_songs: 5
+  analyze_on_add: true
+
+simulation:
+  speed: 1.0              # 1.0 = real-time, 10.0 = 10x speed
+  dry_run: false
+
+custom_instructions: >
+  Start with relaxed Bollywood songs for dinner,
+  gradually build to Punjabi/dance tracks.
+  Save the biggest hits for the peak hour.
+  End with a few emotional/nostalgia tracks.
