@@ -1,0 +1,44 @@
+# === AI DJ System — Policy Configuration ===
+# Hard policies override AI recommendations. These are deterministic gates.
+
+content:
+  explicit_allowed: false
+  minimum_age: 0
+
+languages:
+  allowed:
+    - Hindi
+    - Punjabi
+    - English
+  blocked: []
+
+genres:
+  allowed: []          # empty = all allowed
+  blocked: []
+
+artists:
+  blocked: []
+
+repetition:
+  max_same_song_window: 100    # songs before a song can repeat
+  max_same_artist_window: 4    # songs before same artist can play again
+  max_same_genre_window: 5     # songs before same genre can dominate
+  max_same_album_window: 10    # songs before same album can repeat
+  allow_duplicate_versions: false
+
+transitions:
+  minimum_transition_score: 0.40
+  maximum_energy_jump: 0.25
+  maximum_bpm_jump: 35
+  maximum_mood_jump: 0.35
+
+requests:
+  allow_requests: true
+  allow_deferred_requests: true
+  allow_rejected_requests: true
+  max_pending_requests: 20
+  max_request_wait_songs: 15   # max songs before a deferred request expires
+
+exploration:
+  exploration_rate: 0.10       # 10% exploration, 90% exploitation
+  min_exploration_score: 0.50  # minimum score for exploration candidates
