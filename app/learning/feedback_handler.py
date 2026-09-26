@@ -34,7 +34,7 @@ class FeedbackHandler:
             }
         )
         self.feedback_repo.save_song_feedback(feedback)
-        self.event_bus.publish(BusEvent.FEEDBACK_RECEIVED, {"type": "song", "data": feedback.model_dump()})
+        self.event_bus.publish(BusEvent.FEEDBACK_RECEIVED, source="feedback_handler", data={"type": "song", "data": feedback.model_dump()})
         return feedback
 
     def process_rich_feedback(self, event_id: str, song_id: str, overall: int, energy: int, 
@@ -57,7 +57,7 @@ class FeedbackHandler:
             }
         )
         self.feedback_repo.save_song_feedback(feedback)
-        self.event_bus.publish(BusEvent.FEEDBACK_RECEIVED, {"type": "song", "data": feedback.model_dump()})
+        self.event_bus.publish(BusEvent.FEEDBACK_RECEIVED, source="feedback_handler", data={"type": "song", "data": feedback.model_dump()})
         return feedback
 
     def process_transition_feedback(self, event_id: str, from_song_id: str, to_song_id: str, rating: int, event_state: Any) -> TransitionFeedback:
@@ -73,7 +73,7 @@ class FeedbackHandler:
             }
         )
         self.feedback_repo.save_transition_feedback(feedback)
-        self.event_bus.publish(BusEvent.FEEDBACK_RECEIVED, {"type": "transition", "data": feedback.model_dump()})
+        self.event_bus.publish(BusEvent.FEEDBACK_RECEIVED, source="feedback_handler", data={"type": "transition", "data": feedback.model_dump()})
         return feedback
 
     def process_event_feedback(self, event_id: str, overall: int, song_selection: int, vibe: int, 
@@ -91,5 +91,5 @@ class FeedbackHandler:
             comments=comments
         )
         self.feedback_repo.save_event_feedback(feedback)
-        self.event_bus.publish(BusEvent.FEEDBACK_RECEIVED, {"type": "event", "data": feedback.model_dump()})
+        self.event_bus.publish(BusEvent.FEEDBACK_RECEIVED, source="feedback_handler", data={"type": "event", "data": feedback.model_dump()})
         return feedback

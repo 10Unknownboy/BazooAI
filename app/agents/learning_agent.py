@@ -23,7 +23,7 @@ class LearningAgent:
         self.apply_immediate_learning(feedback, event_state, reward)
         self.store_learning_record(event_state, "play_song", reward, event_state, {"song_id": feedback.song_id})
         
-        self.event_bus.publish(BusEvent.FEEDBACK_RECEIVED, {"feedback_id": feedback.feedback_id, "reward": reward})
+        self.event_bus.publish(BusEvent.FEEDBACK_RECEIVED, source="learning_agent", data={"feedback_id": feedback.feedback_id, "reward": reward})
 
     def calculate_reward(self, feedback: SongFeedback) -> float:
         """Calculate a reward score (-1.0 to 1.0) based on feedback."""

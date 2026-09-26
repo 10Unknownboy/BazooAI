@@ -31,7 +31,7 @@ class AIModelClient:
                 return True
         except Exception as e:
             logger.warning(f"AI model server health check failed: {e}")
-            self.event_bus.publish(BusEvent.AI_UNAVAILABLE, {"error": str(e)})
+            self.event_bus.publish(BusEvent.AI_UNAVAILABLE, source="ai_client", data={"error": str(e)})
             return False
 
     async def decide(self, request: AIRequest) -> AIResponse:
@@ -59,7 +59,7 @@ class AIModelClient:
         return await self._send_request(f"{self.base_url}/v1/ai/decide", request)
 
     async def _send_request(self, url: str, request: AIRequest) -> AIResponse:
-        self.event_bus.publish(BusEvent.AI_REQUEST_SENT, {"request_id": request.request_id, "task": request.task_type})
+        self.event_bus.publish(BusEvent.AI_REQUEST_SENT, source="ai_client", data={"request_id": request.request_id, "task": request.task_type})
         
         for attempt in range(self.max_retries):
             try:
@@ -70,7 +70,7 @@ class AIModelClient:
                     data = response.json()
                     ai_response = AIResponse.model_validate(data)
                     
-                    self.event_bus.publish(BusEvent.AI_RESPONSE_RECEIVED, {
+                    self.event_bus.publish(BusEvent.AI_RESPONSE_RECEIVED, source="ai_client", data={
                         "request_id": request.request_id,
                         "success": ai_response.success
                     })
@@ -89,7 +89,7 @@ class AIModelClient:
                 await asyncio.sleep(sleep_time)
         
         logger.error(f"AI model request failed after {self.max_retries} attempts.")
-        self.event_bus.publish(BusEvent.AI_UNAVAILABLE, {"request_id": request.request_id})
+        self.event_bus.publish(BusEvent.AI_UNAVAILABLE, source="ai_client", data={"request_id": request.request_id})
         return AIResponse(
             request_id=request.request_id,
             success=False,

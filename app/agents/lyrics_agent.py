@@ -82,7 +82,7 @@ class LyricsAgent:
                     event_suitability=data.get("event_suitability", {})
                 )
                 
-                self.event_bus.publish(BusEvent.LYRICS_ANALYSIS_COMPLETE, {"song_id": song_id})
+                self.event_bus.publish(BusEvent.LYRICS_ANALYSIS_COMPLETE, source="lyrics_agent", data={"song_id": song_id})
                 return features
                 
         except Exception as e:
