@@ -50,7 +50,7 @@ class RequestAgent:
                     reason=reason
                 )
                 self._update_status(request, decision.status, reason)
-                self.event_bus.publish(BusEvent.REQUEST_DECIDED, {"decision": decision.model_dump(mode="json")})
+                self.event_bus.publish(BusEvent.REQUEST_DECIDED, source="request_agent", data={"decision": decision.model_dump(mode="json")})
                 
                 if decision.status == RequestStatus.DEFERRED:
                     self.deferred_requests.append(request)
@@ -67,7 +67,7 @@ class RequestAgent:
             reason="Fallback to accept and queue"
         )
         self._update_status(request, decision.status, decision.reason)
-        self.event_bus.publish(BusEvent.REQUEST_DECIDED, {"decision": decision.model_dump(mode="json")})
+        self.event_bus.publish(BusEvent.REQUEST_DECIDED, source="request_agent", data={"decision": decision.model_dump(mode="json")})
         return decision
 
     def _map_decision_to_status(self, decision_str: str) -> RequestStatus:

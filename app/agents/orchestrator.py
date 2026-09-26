@@ -71,7 +71,7 @@ class DJOrchestrator:
         # 7. Update Queue
         
         # Publish state update
-        self.event_bus.publish(BusEvent.EVENT_STATE_UPDATED, {"state": self.current_state.model_dump()})
+        self.event_bus.publish(BusEvent.EVENT_STATE_UPDATED, source="orchestrator", data={"state": self.current_state.model_dump()})
         self.runtime_state.update(self.current_state)
 
     def _on_song_started(self, payload: Dict[str, Any]) -> None:
