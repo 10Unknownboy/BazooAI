@@ -31,7 +31,7 @@ class SongSelectionAgent:
         # 2. Optional AI review
         try:
             from app.models.base import AIMessageType
-            candidates_data = [{"id": c.song.id, "title": c.song.title, "artist": c.song.artist} for c in top_candidates]
+            candidates_data = [{"id": c.song.song_id, "title": c.song.title, "artist": c.song.artist} for c in top_candidates]
             request = AIRequest(
                 message_type=AIMessageType.QUEUE_REVIEW,
                 candidate_songs=candidates_data,
@@ -42,13 +42,13 @@ class SongSelectionAgent:
             )
             response = await self.ai_client.decide(request)
             
-            if response.success and response.content and "ranked_ids" in response.content:
-                ranked_ids = response.content["ranked_ids"]
+            if response.success and response.recommended_song_ids:
+                ranked_ids = response.recommended_song_ids
                 # Reorder top_candidates based on AI ranking
                 ranked_candidates = []
                 for song_id in ranked_ids:
                     for c in top_candidates:
-                        if c.song.id == song_id:
+                        if c.song.song_id == song_id:
                             ranked_candidates.append(c)
                             break
                 

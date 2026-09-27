@@ -108,7 +108,7 @@ class DJOrchestrator:
                     if req.matched_song_id and req.matched_song_id not in exclude_ids:
                         req_song_ids.append(req.matched_song_id)
                         # Fetch the song if not already in candidates
-                        if not any(c.id == req.matched_song_id for c in candidates):
+                        if not any(c.song_id == req.matched_song_id for c in candidates):
                             song = self.candidate_generator.song_repo.get(req.matched_song_id)
                             if song:
                                 candidates.append(song)
@@ -127,7 +127,7 @@ class DJOrchestrator:
                 adjustment = self.learning_agent.get_learned_adjustment(c, self.current_state)
                 final_score = score_res.final_score + adjustment
                 
-                if c.id in req_song_ids:
+                if c.song_id in req_song_ids:
                     final_score += 100.0  # Big boost for requested songs
                     
                 scored_candidates.append(ScoredCandidate(song=c, score=final_score, breakdown=score_res.score_components))
@@ -142,7 +142,7 @@ class DJOrchestrator:
                     title = getattr(sc.song, 'title', 'Unknown')
                     artist = getattr(sc.song, 'artist', 'Unknown')
                     self.queue_manager.add_song(
-                        song_id=sc.song.id,
+                        song_id=sc.song.song_id,
                         score=sc.score,
                         components=sc.breakdown,
                         song_title=title,

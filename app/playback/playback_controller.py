@@ -105,7 +105,7 @@ class PlaybackController:
     def on_song_end(self):
         """Advances queue when song ends."""
         if self.current_song:
-            self.event_bus.publish(BusEvent.SONG_ENDED, data={"song_id": self.current_song.id})
+            self.event_bus.publish(BusEvent.SONG_ENDED, data={"song_id": self.current_song.song_id})
         self.queue.advance()
         self.current_song = None
         self.is_playing = False

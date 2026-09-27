@@ -27,7 +27,7 @@ class CandidateGenerator:
             
             candidates = []
             for song in all_songs:
-                if song.id in exclude:
+                if song.song_id in exclude:
                     continue
                 # Further filtering logic based on event_state could go here
                 candidates.append(song)

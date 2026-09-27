@@ -45,7 +45,7 @@ class AudioAnalyzer:
                 energy=0.0,
                 danceability=0.0,
                 valence=0.0,
-                embedding=[],
+                audio_embedding=[],
                 analysis_status="NOT_AVAILABLE"
             )
             self.repository.save(features)
@@ -61,13 +61,13 @@ class AudioAnalyzer:
             energy=self.extractor.estimate_energy(raw_features),
             danceability=self.extractor.estimate_danceability(raw_features),
             valence=self.extractor.estimate_valence(raw_features),
-            embedding=[],
+            audio_embedding=[],
             analysis_status="COMPLETE"
         )
         
         # Generate embedding
-        features.embedding = self.embedding_manager.generate_embedding(features)
+        features.audio_embedding = self.embedding_manager.generate_embedding(features)
         
         self.repository.save(features)
-        self.event_bus.publish(BusEvent(event_type="AUDIO_ANALYSIS_COMPLETE", data={"song_id": song_id}))
+        self.event_bus.publish(BusEvent.AUDIO_ANALYSIS_COMPLETE, source="analyzer", data={"song_id": song_id})
         return features

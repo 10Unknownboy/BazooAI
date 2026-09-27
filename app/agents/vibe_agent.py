@@ -45,14 +45,13 @@ class VibeAgent:
             )
             response = await self.ai_client.decide(request)
             
-            if response.success and response.content:
-                data = response.content
+            if response.success and response.recommended_vibe:
                 return VibeRecommendation(
-                    recommended_vibe=VibeVector(**data.get("vibe", {})),
-                    preferred_genres=data.get("genres", []),
-                    preferred_languages=data.get("languages", []),
-                    reason=data.get("reason", "AI decided"),
-                    confidence=data.get("confidence", 0.8)
+                    recommended_vibe=response.recommended_vibe,
+                    preferred_genres=response.preferred_genres or [],
+                    preferred_languages=response.preferred_languages or [],
+                    reason=response.reason or "AI decided",
+                    confidence=response.confidence or 0.8
                 )
         except Exception as e:
             logger.warning(f"AI vibe evaluation failed: {e}. Falling back to deterministic config.")

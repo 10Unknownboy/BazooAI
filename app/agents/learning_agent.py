@@ -49,7 +49,7 @@ class LearningAgent:
         """Get the score adjustment based on learned preferences for this song in this context."""
         adjustment = 0.0
         for fb in event_state.crowd_feedback_history:
-            if fb.get("song_id") == song.id:
+            if fb.get("song_id") == song.song_id:
                 # Add scaled reward to the song's score
                 adjustment += fb.get("reward", 0.0) * 10.0
         return adjustment

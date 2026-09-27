@@ -36,10 +36,10 @@ class RequestAgent:
             all_songs = song_repo.get_all(limit=100)
             for s in all_songs:
                 if request.requested_song_query.lower() in s.title.lower() or request.requested_song_query.lower() in s.artist.lower():
-                    request.matched_song_id = s.id
+                    request.matched_song_id = s.song_id
                     break
             if not request.matched_song_id and all_songs:
-                request.matched_song_id = all_songs[0].id # fallback match
+                request.matched_song_id = all_songs[0].song_id # fallback match
         
         self._update_status(request, RequestStatus.ANALYZING)
         
@@ -55,9 +55,9 @@ class RequestAgent:
             )
             response = await self.ai_client.decide(ai_req)
             
-            if response.success and response.content:
-                decision_str = response.content.get("decision", "QUEUE")
-                reason = response.content.get("reason", "AI decided")
+            if response.success:
+                decision_str = response.request_decision or response.decision or "QUEUE"
+                reason = response.reason or "AI decided"
                 
                 decision = RequestDecision(
                     request_id=request.request_id,

@@ -25,6 +25,7 @@ class LocalFileProvider(MusicProvider):
     SUPPORTED_EXTS = {'.mp3', '.wav', '.flac', '.ogg'}
 
     def __init__(self, directory: str):
+        global PYGAME_AVAILABLE
         self.directory = directory
         self._index: dict[str, dict] = {}
         self._playing = False
@@ -37,7 +38,6 @@ class LocalFileProvider(MusicProvider):
                     pygame.mixer.init()
             except Exception as e:
                 logger.error(f"Failed to initialize pygame mixer: {e}")
-                global PYGAME_AVAILABLE
                 PYGAME_AVAILABLE = False
         else:
             logger.warning("pygame not installed. Audio playback will use pseudo-playback fallback.")

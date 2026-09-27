@@ -36,7 +36,7 @@ class CrowdSimulator:
         
         return SongFeedback(
             event_id=getattr(event_state, 'event_id', 'sim_event'),
-            song_id=song.id,
+            song_id=song.song_id,
             timestamp=datetime.now(),
             overall_rating=int_score,
             energy_rating=int_score,
