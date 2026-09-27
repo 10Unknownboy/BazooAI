@@ -16,7 +16,7 @@ class MusicProvider:
     def play(self): pass
     def pause(self): pass
     def stop(self): pass
-    def set_volume(self, value): pass
+    def volume(self, value): pass
     def seek(self, seconds): pass
 
 
@@ -54,7 +54,7 @@ class PlaybackController:
         if getattr(self.provider, "_paused", False) and self.current_song:
             self.provider.resume()
             self.is_playing = True
-            self.event_bus.publish(BusEvent.PLAYBACK_RESUMED, {})
+            self.event_bus.publish(BusEvent.PLAYBACK_RESUMED, source="playback", data={})
             return
 
         item = self.queue.get_current()
@@ -72,18 +72,18 @@ class PlaybackController:
         """Pause playback."""
         self.provider.pause()
         self.is_playing = False
-        self.event_bus.publish(BusEvent.PLAYBACK_PAUSED, {})
+        self.event_bus.publish(BusEvent.PLAYBACK_PAUSED, source="playback", data={})
         
     def resume(self):
         """Resume playback."""
         self.play()
-        self.event_bus.publish(BusEvent.PLAYBACK_RESUMED, data={})
+        self.event_bus.publish(BusEvent.PLAYBACK_RESUMED, source="playback", data={})
         
     def stop(self):
         """Stop playback."""
         self.provider.stop()
         self.is_playing = False
-        self.event_bus.publish(BusEvent.PLAYBACK_STOPPED, data={})
+        self.event_bus.publish(BusEvent.PLAYBACK_STOPPED, source="playback", data={})
         
     def skip(self):
         """Skip to next song."""
@@ -96,7 +96,7 @@ class PlaybackController:
         
     def volume(self, value: int):
         """Set volume level."""
-        self.provider.set_volume(value)
+        self.provider.volume(value)
         
     def seek(self, seconds: float):
         """Seek to a position in current song."""
@@ -105,7 +105,7 @@ class PlaybackController:
     def on_song_end(self):
         """Advances queue when song ends."""
         if self.current_song:
-            self.event_bus.publish(BusEvent.SONG_ENDED, data={"song_id": self.current_song.song_id})
+            self.event_bus.publish(BusEvent.SONG_ENDED, source="playback", data={"song_id": self.current_song.song_id})
         self.queue.advance()
         self.current_song = None
         self.is_playing = False
