@@ -1,8 +1,8 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, Request
 from pydantic import BaseModel
 import qrcode
 import io
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 import logging
 import uuid
 import time
@@ -11,6 +11,8 @@ from app.event.event_bus import get_event_bus, BusEvent
 logger = logging.getLogger(__name__)
 
 guest_router = APIRouter()
+app = FastAPI(title="AI DJ Guest API")
+app.include_router(guest_router)
 
 class SongRequest(BaseModel):
     guest_name: str | None = None
@@ -24,6 +26,8 @@ async def submit_request(req: SongRequest):
     bus = get_event_bus()
     request_id = f"req_{uuid.uuid4().hex[:8]}"
     
+    query = f"{req.song_title} {req.artist}".strip() if req.artist else req.song_title
+    
     # Emit event for the orchestrator/agent to handle
     bus.publish(BusEvent.REQUEST_RECEIVED,
         source="guest_api",
@@ -34,7 +38,7 @@ async def submit_request(req: SongRequest):
             "artist": req.artist,
             "dedication": req.dedication,
             "timestamp": time.time(),
-            "query": f"{req.song_title} {req.artist}".strip()
+            "query": query
         }
     )
     
@@ -63,4 +67,4 @@ async def get_qr_code(request: Request):
     img.save(buf, format="PNG")
     buf.seek(0)
     
-    return StreamingResponse(buf, media_type="image/png")
+    return Response(content=buf.getvalue(), media_type="image/png")

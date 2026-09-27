@@ -31,7 +31,7 @@ def main(dashboard, run_streamlit, debug, api, run_all, dry_run, event, simulate
     setup_logging()
     if run_streamlit:
         print("Launching Guest API on port 8003...")
-        api_proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.api.guest_api:guest_router", "--port", "8003"])
+        api_proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.api.guest_api:app", "--port", "8003"])
         print("Launching Streamlit Dashboard...")
         subprocess.run([sys.executable, "-m", "streamlit", "run", "app/ui/streamlit_app.py"])
         api_proc.terminate()

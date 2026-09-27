@@ -194,6 +194,9 @@ class LocalFileProvider(MusicProvider):
         logger.info(f"LocalFileProvider volume set to {value}")
         return True
 
+    def set_volume(self, value: int) -> bool:
+        return self.volume(value)
+
     def current_song(self) -> dict | None:
         return self._current_song
 
