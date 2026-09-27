@@ -32,11 +32,7 @@ class PlaybackController:
 
     def _monitor_playback(self) -> None:
         while not self._stop_monitor.wait(0.25):
-            if (
-                self.is_playing
-                and not self.provider.is_playing()
-                and not getattr(self.provider, "_paused", False)
-            ):
+            if self.is_playing and not self.provider.is_playing() and not self.is_paused:
                 logger.info("Playback monitor detected song end")
                 self.on_song_end()
                 self.play()
@@ -46,7 +42,7 @@ class PlaybackController:
         if self.is_playing:
             return True
 
-        if self.current_song and getattr(self.provider, "_paused", False):
+        if self.current_song and self.is_paused:
             if not self.provider.resume():
                 return False
             self.is_playing = True
@@ -176,7 +172,9 @@ class PlaybackController:
 
     @property
     def is_paused(self) -> bool:
-        return bool(getattr(self.provider, "_paused", False))
+        if hasattr(self.provider, "_paused"):
+            return bool(getattr(self.provider, "_paused"))
+        return self.current_song is not None and not self.provider.is_playing()
 
     def get_remaining_time(self) -> float:
         return self.provider.get_remaining_time()

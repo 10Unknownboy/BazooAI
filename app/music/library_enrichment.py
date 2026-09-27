@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from datetime import timedelta
 
 from app.agents.lyrics_agent import LyricsAgent
+from app.caching.api_cache import APICache
 from app.database.repositories import (
     CacheRepository,
     LyricsFeaturesRepository,
@@ -13,7 +13,6 @@ from app.database.repositories import (
     get_repository,
 )
 from app.models.base import AnalysisStatus
-from app.models.cache import CacheEntry
 from app.models.song import LyricsFeatures as StoredLyricsFeatures
 from app.models.song import Song
 from app.music.lrclib_adapter import LRCLibAdapter
@@ -36,6 +35,7 @@ class LibraryEnrichmentService:
     ):
         self.songs = songs or get_repository("song")
         self.cache = cache or get_repository("cache")
+        self.api_cache = APICache(self.cache)
         self.musicbrainz = musicbrainz or MusicBrainzAdapter()
         self.lrclib = lrclib or LRCLibAdapter()
         self.lyrics_agent = lyrics_agent or LyricsAgent()
@@ -182,17 +182,24 @@ class LibraryEnrichmentService:
             analysis_status="COMPLETE",
         )
         self.lyrics_repository.save(features)
-        cached_lyrics = self.cache.get("lrclib", "song_lyrics", song.song_id)
+        cached_lyrics = self.api_cache.get("lrclib", "song_lyrics", song.song_id)
         if cached_lyrics:
-            cached_lyrics.data["analysis_model"] = model_name
-            cached_lyrics.data["analysis_version"] = self.lyrics_agent.ANALYSIS_VERSION
-            self.cache.save(cached_lyrics)
+            cached_lyrics["analysis_model"] = model_name
+            cached_lyrics["analysis_version"] = self.lyrics_agent.ANALYSIS_VERSION
+            self.api_cache.save(
+                "lrclib",
+                "song_lyrics",
+                song.song_id,
+                cached_lyrics,
+                ttl_seconds=30 * 24 * 60 * 60,
+                source_url="https://lrclib.net/api/get",
+            )
         return features
 
     async def _get_metadata(self, song: Song) -> dict | None:
-        cached = self.cache.get("musicbrainz", "song_metadata", song.song_id)
+        cached = self.api_cache.get("musicbrainz", "song_metadata", song.song_id)
         if cached:
-            return cached.data
+            return cached
         query = (
             f'recording:"{_escape_lucene(song.title)}" AND artist:"{_escape_lucene(song.artist)}"'
         )
@@ -202,23 +209,20 @@ class LibraryEnrichmentService:
         selected = max(results, key=lambda result: _metadata_match(song, result))
         if _metadata_match(song, selected) < 0.5:
             return None
-        self.cache.save(
-            CacheEntry(
-                provider="musicbrainz",
-                resource_type="song_metadata",
-                resource_id=song.song_id,
-                data=selected,
-                ttl_seconds=90 * 24 * 60 * 60,
-                expires_at=_expires(90),
-                source_url="https://musicbrainz.org/ws/2/recording",
-            )
+        self.api_cache.save(
+            "musicbrainz",
+            "song_metadata",
+            song.song_id,
+            selected,
+            ttl_seconds=90 * 24 * 60 * 60,
+            source_url="https://musicbrainz.org/ws/2/recording",
         )
         return selected
 
     async def _get_lyrics(self, song: Song) -> dict | None:
-        cached = self.cache.get("lrclib", "song_lyrics", song.song_id)
+        cached = self.api_cache.get("lrclib", "song_lyrics", song.song_id)
         if cached:
-            return None if cached.data.get("not_found") else cached.data
+            return None if cached.get("not_found") else cached
         lyrics = await self.lrclib.get_lyrics(
             title=song.title,
             artist=song.artist,
@@ -227,19 +231,14 @@ class LibraryEnrichmentService:
         )
         if lyrics is None:
             return None
-        if lyrics.get("not_found") or not (
-            lyrics.get("plainLyrics") or lyrics.get("syncedLyrics")
-        ):
-            self.cache.save(
-                CacheEntry(
-                    provider="lrclib",
-                    resource_type="song_lyrics",
-                    resource_id=song.song_id,
-                    data={"not_found": True, "source": "lrclib"},
-                    ttl_seconds=24 * 60 * 60,
-                    expires_at=_expires(1),
-                    source_url="https://lrclib.net/api/get",
-                )
+        if lyrics.get("not_found") or not (lyrics.get("plainLyrics") or lyrics.get("syncedLyrics")):
+            self.api_cache.save(
+                "lrclib",
+                "song_lyrics",
+                song.song_id,
+                {"not_found": True, "source": "lrclib"},
+                ttl_seconds=24 * 60 * 60,
+                source_url="https://lrclib.net/api/get",
             )
             return None
         lyrics_text = lyrics.get("plainLyrics") or lyrics.get("syncedLyrics") or ""
@@ -247,24 +246,15 @@ class LibraryEnrichmentService:
         lyrics["source"] = "lrclib"
         lyrics["analysis_model"] = None
         lyrics["analysis_version"] = 1
-        self.cache.save(
-            CacheEntry(
-                provider="lrclib",
-                resource_type="song_lyrics",
-                resource_id=song.song_id,
-                data=lyrics,
-                ttl_seconds=30 * 24 * 60 * 60,
-                expires_at=_expires(30),
-                source_url="https://lrclib.net/api/get",
-            )
+        self.api_cache.save(
+            "lrclib",
+            "song_lyrics",
+            song.song_id,
+            lyrics,
+            ttl_seconds=30 * 24 * 60 * 60,
+            source_url="https://lrclib.net/api/get",
         )
         return lyrics
-
-
-def _expires(days: int):
-    from app.models.base import utc_now
-
-    return utc_now() + timedelta(days=days)
 
 
 def _release_year(value: str | None) -> int | None:

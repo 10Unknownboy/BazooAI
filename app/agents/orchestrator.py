@@ -43,6 +43,7 @@ class DJOrchestrator:
         self._subscriptions = []
         self.event_repository = get_repository("event")
         self.decision_repository = get_repository("agent_decision")
+        self.play_history_repository = get_repository("play_history")
 
         # Instantiate agents and engines
         self.vibe_agent = VibeAgent()
@@ -135,6 +136,28 @@ class DJOrchestrator:
 
         command = cmd.get("command")
         args = cmd.get("args", [])
+        if command == "event_pause":
+            self.current_state.is_paused = True
+            self.current_state.playback_state = PlaybackState.PAUSED
+            self.event_repository.save_state(
+                self.current_state.event_id, self.current_state
+            )
+            self._publish_runtime_state()
+            self.event_bus.publish(BusEvent.EVENT_PAUSED, source="orchestrator")
+            return
+        if command == "event_resume":
+            self.current_state.is_paused = False
+            self.current_state.playback_state = PlaybackState.PLAYING
+            self.event_repository.save_state(
+                self.current_state.event_id, self.current_state
+            )
+            self._publish_runtime_state()
+            self.event_bus.publish(BusEvent.EVENT_RESUMED, source="orchestrator")
+            return
+        if command == "event_end":
+            await self.stop()
+            self.event_bus.publish(BusEvent.EVENT_ENDED, source="orchestrator")
+            return
         if command == "vibe" and args:
             try:
                 preset = VibePreset(str(args[0]).lower())
@@ -289,6 +312,7 @@ class DJOrchestrator:
                 penalty_components=candidate.penalties,
                 song_title=candidate.song.title,
                 song_artist=candidate.song.artist,
+                song_genre=candidate.song.genre,
                 decision_epoch=state.decision_epoch,
                 request_id=candidate.request_id,
             )
@@ -351,6 +375,28 @@ class DJOrchestrator:
         self.current_state.current_song_id = song_id
         self.current_state.current_song_started_at = utc_now()
         self.current_state.playback_state = PlaybackState.PLAYING
+        queue_item = next(
+            (item for item in self.queue_manager.items if item.song_id == song_id),
+            None,
+        )
+        if queue_item:
+            self.play_history_repository.record_start(
+                event_id=self.current_state.event_id,
+                song_id=song_id,
+                position=queue_item.position,
+                score=queue_item.final_score,
+                components=queue_item.score_components,
+                penalties=queue_item.penalty_components,
+                vibe=self.current_state.vibe_vector.model_dump(mode="json"),
+                energy=self.current_state.target_energy,
+                previous_song_id=(
+                    self.current_state.recent_history[-1]
+                    if self.current_state.recent_history
+                    else None
+                ),
+                request_id=queue_item.request_id,
+                decision_epoch=queue_item.decision_epoch,
+            )
         self.event_repository.save_state(self.current_state.event_id, self.current_state)
         self._publish_runtime_state()
         await self.run_decision_cycle("song_begins")
@@ -360,23 +406,46 @@ class DJOrchestrator:
             logger.info("Song ended event received")
             song_id = message.data.get("song_id")
             current_item = self.queue_manager.get_current()
-            if song_id and current_item and current_item.song_id == song_id:
-                song = self.candidate_generator.song_repo.get(song_id)
-                if song:
-                    self.current_state.recent_history.append(song_id)
-                    self.current_state.recent_artists.append(song.artist)
-                    if song.genre:
-                        self.current_state.recent_genres.append(song.genre)
-                    self.current_state.current_energy = song.effective_energy()
-                    self.current_state.songs_played_count += 1
-                self.queue_manager.advance()
-            self.current_state.current_song_id = None
-            self.current_state.playback_state = PlaybackState.STOPPED
+            if not song_id or not current_item or current_item.song_id != song_id:
+                logger.warning("Ignoring out-of-order song end for %s", song_id)
+                return
+            self.queue_manager.advance()
+            next_item = self.queue_manager.get_current()
             future = asyncio.run_coroutine_threadsafe(
-                self.run_decision_cycle("song_ending"),
+                self._record_song_ended(
+                    song_id,
+                    next_item.song_id if next_item else None,
+                ),
                 self._loop,
             )
             future.add_done_callback(self._log_background_failure)
+
+    async def _record_song_ended(
+        self,
+        song_id: str | None,
+        next_song_id: str | None,
+    ) -> None:
+        if not self.current_state or not song_id:
+            return
+        song = self.candidate_generator.song_repo.get(song_id)
+        if song:
+            self.current_state.recent_history.append(song_id)
+            self.current_state.recent_artists.append(song.artist)
+            if song.genre:
+                self.current_state.recent_genres.append(song.genre)
+            self.current_state.current_energy = song.effective_energy()
+            self.current_state.songs_played_count += 1
+        self.current_state.current_song_id = None
+        self.current_state.playback_state = PlaybackState.STOPPED
+        self.current_state.last_state_update = utc_now()
+        self.event_repository.save_state(self.current_state.event_id, self.current_state)
+        self._publish_runtime_state()
+        self.play_history_repository.record_end(
+            event_id=self.current_state.event_id,
+            song_id=song_id,
+            next_song_id=next_song_id,
+        )
+        await self.run_decision_cycle("song_ending")
 
     def _on_request_received(self, message: BusMessage) -> None:
         if self.is_running and self.current_state and self._loop:

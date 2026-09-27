@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
 from app.__main__ import event_config_from_file
 from app.agents.learning_agent import LearningAgent
 from app.config.settings import PROJECT_ROOT, AppSettings
+from app.database.engine import Base
+from app.database.repositories import EventRepository
 from app.event.event_bus import BusEvent, get_event_bus
+from app.event.event_manager import EventManager
+from app.models.base import PlaybackState
+from app.models.event import EventConfig
 from app.models.feedback import RewardRecord, SongFeedback
 from app.providers.local_file_provider import LocalFileProvider
 
@@ -102,3 +110,28 @@ def test_local_music_dir_from_env_preserves_absolute_path(monkeypatch, tmp_path)
 
     assert len(provider.list_songs()) == 1
     assert Path(provider.list_songs()[0]["path"]) == tmp_path / "env-track.mp3"
+
+
+def test_event_manager_persists_typed_event_lifecycle():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    manager = EventManager(EventRepository(session))
+    config = EventConfig(event_id="event-lifecycle", duration_minutes=60)
+
+    created = manager.create_event(config)
+    started = manager.start_event(config.event_id)
+    paused = manager.pause_event().model_copy(deep=True)
+    resumed = manager.resume_event().model_copy(deep=True)
+    ended = manager.end_event().model_copy(deep=True)
+    persisted = manager.load_state(config.event_id)
+
+    assert created.event_id == config.event_id
+    assert started.event_started_at is not None
+    assert paused.is_paused
+    assert paused.playback_state == PlaybackState.PAUSED
+    assert not resumed.is_paused
+    assert ended.is_ended
+    assert persisted.is_ended
+    assert EventRepository(session).get_active_event() is None
+    session.close()

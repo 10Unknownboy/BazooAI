@@ -589,6 +589,68 @@ class PlayHistoryRepository:
         self.session.add(row)
         self.session.commit()
 
+    def record_start(
+        self,
+        *,
+        event_id: str,
+        song_id: str,
+        position: int,
+        score: float,
+        components: dict,
+        penalties: dict,
+        vibe: dict,
+        energy: float,
+        previous_song_id: str | None,
+        request_id: str | None,
+        decision_epoch: int,
+    ) -> int:
+        row = PlayHistoryTable(
+            event_id=event_id,
+            song_id=song_id,
+            position=position,
+            start_time=_utc_now(),
+            score=score,
+            score_components=components,
+            penalties=penalties,
+            vibe_at_selection=vibe,
+            energy_at_selection=energy,
+            previous_song_id=previous_song_id,
+            request_related=request_id is not None,
+            request_id=request_id,
+            decision_epoch=decision_epoch,
+        )
+        self.session.add(row)
+        self.session.commit()
+        return row.id
+
+    def record_end(
+        self,
+        *,
+        event_id: str,
+        song_id: str,
+        next_song_id: str | None,
+    ) -> bool:
+        row = self.session.execute(
+            select(PlayHistoryTable)
+            .where(
+                and_(
+                    PlayHistoryTable.event_id == event_id,
+                    PlayHistoryTable.song_id == song_id,
+                    PlayHistoryTable.end_time.is_(None),
+                )
+            )
+            .order_by(PlayHistoryTable.start_time.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if row is None:
+            return False
+        ended_at = _utc_now()
+        row.end_time = ended_at
+        row.duration_played = max(0.0, (ended_at - row.start_time).total_seconds())
+        row.next_song_id = next_song_id
+        self.session.commit()
+        return True
+
     def get_event_history(self, event_id: str) -> list[dict]:
         rows = (
             self.session.execute(
@@ -958,6 +1020,19 @@ class CacheRepository:
             row = APICacheTable(**entry.model_dump())
             self.session.add(row)
         self.session.commit()
+
+    def delete(self, provider: str, resource_type: str, resource_id: str) -> bool:
+        result = self.session.execute(
+            delete(APICacheTable).where(
+                and_(
+                    APICacheTable.provider == provider,
+                    APICacheTable.resource_type == resource_type,
+                    APICacheTable.resource_id == resource_id,
+                )
+            )
+        )
+        self.session.commit()
+        return bool(result.rowcount)
 
     def delete_expired(self) -> int:
         result = self.session.execute(

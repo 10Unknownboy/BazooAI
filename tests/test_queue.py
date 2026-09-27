@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from app.models.base import LockStatus
-from app.models.queue import QueueItem, QueueState
 from app.queue.queue_manager import QueueManager
 
 
@@ -58,13 +56,51 @@ def test_advance_removes_current(queue_manager):
             components={"vibe_match": 80.0},
             position=i,
         )
-    
+
     first = queue_manager.get_current()
     assert first is not None
     first_id = first.song_id
-    
+
     queue_manager.advance()
-    
+
     new_current = queue_manager.get_current()
     if new_current:
         assert new_current.song_id != first_id
+
+
+def test_queue_reads_return_copies(queue_manager):
+    """Mutating returned queue data must not mutate the manager's state."""
+    queue_manager.add_song(
+        song_id="SNG_copy",
+        score=85.0,
+        components={"vibe_match": 80.0},
+    )
+
+    from_items = queue_manager.items
+    from_current = queue_manager.get_current()
+    from_state = queue_manager.get_state()
+    from_items[0].score_components.vibe_match = -1.0
+    from_current.song_id = "SNG_mutated"
+    from_state.items.clear()
+
+    assert queue_manager.get_current().song_id == "SNG_copy"
+    assert queue_manager.get_current().score_components.vibe_match == 80.0
+
+
+def test_clear_reconsidering_preserves_locked_head(queue_manager):
+    """Reconsidering only removes unlocked future entries."""
+    for index in range(6):
+        queue_manager.add_song(
+            song_id=f"SNG_{index}",
+            score=90.0 - index,
+            components={},
+        )
+
+    removed = queue_manager.clear_reconsidering()
+
+    assert removed == 3
+    assert [item.song_id for item in queue_manager.items] == [
+        "SNG_0",
+        "SNG_1",
+        "SNG_2",
+    ]
