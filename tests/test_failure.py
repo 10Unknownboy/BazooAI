@@ -38,6 +38,7 @@ def test_exit_fallback_mode(fallback_manager):
 def test_ai_client_health_check_fails_gracefully():
     """AI client should handle connection failures gracefully."""
     client = AIModelClient()
+    client.base_url = "http://127.0.0.1:1"
     # check_health is async — run it
     result = asyncio.run(client.check_health())
     assert result is False

@@ -9,6 +9,11 @@ try:
 except ImportError:
     LIBROSA_AVAILABLE = False
 
+try:
+    import numpy as np
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 
 class FeatureExtractor:

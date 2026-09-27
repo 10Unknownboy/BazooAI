@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Optional
 
 from app.models.song import Song
@@ -29,32 +30,60 @@ class PlaybackController:
         self.current_song: Optional[Song] = None
         self.is_playing = False
         
+        # Start a background monitoring thread
+        self._monitor_thread = threading.Thread(target=self._monitor_playback, daemon=True)
+        self._monitor_thread.start()
+
+    def _monitor_playback(self):
+        import time
+        while True:
+            time.sleep(1)
+            # If we think we are playing, but the provider says it stopped
+            # (and not because we explicitly paused it)
+            if self.is_playing and not self.provider.is_playing() and not getattr(self.provider, "_paused", False):
+                logger.info("PlaybackController monitor detected song end.")
+                self.on_song_end()
+                self.play()  # Automatically start next song
+        
     def play(self):
         """Start or resume playback."""
+        if self.is_playing:
+            return
+            
+        # If we have a current item and provider is paused, try resuming
+        if getattr(self.provider, "_paused", False) and self.current_song:
+            self.provider.resume()
+            self.is_playing = True
+            self.event_bus.publish(BusEvent.PLAYBACK_RESUMED, {})
+            return
+
         item = self.queue.get_current()
         if item:
-            # Assume we fetch the actual Song object based on item.song_id
-            # self.current_song = fetch_song(item.song_id)
-            self.provider.play()
+            # In a full system, we'd fetch the Song object.
+            # We'll just create a dummy one for now if not fetched.
+            self.current_song = Song(id=item.song_id, title=item.song_title, artist=item.song_artist, duration=210.0)
+            
+            # play() takes a song_id
+            self.provider.play(item.song_id)
             self.is_playing = True
-            self.event_bus.publish(BusEvent("SONG_STARTED", {"song_id": item.song_id}))
+            self.event_bus.publish(BusEvent.SONG_STARTED, source="playback", data={"song_id": item.song_id})
             
     def pause(self):
         """Pause playback."""
         self.provider.pause()
         self.is_playing = False
-        self.event_bus.publish(BusEvent("PLAYBACK_PAUSED", {}))
+        self.event_bus.publish(BusEvent.PLAYBACK_PAUSED, {})
         
     def resume(self):
         """Resume playback."""
         self.play()
-        self.event_bus.publish(BusEvent("PLAYBACK_RESUMED", {}))
+        self.event_bus.publish(BusEvent.PLAYBACK_RESUMED, data={})
         
     def stop(self):
         """Stop playback."""
         self.provider.stop()
         self.is_playing = False
-        self.event_bus.publish(BusEvent("PLAYBACK_STOPPED", {}))
+        self.event_bus.publish(BusEvent.PLAYBACK_STOPPED, data={})
         
     def skip(self):
         """Skip to next song."""
@@ -76,7 +105,7 @@ class PlaybackController:
     def on_song_end(self):
         """Advances queue when song ends."""
         if self.current_song:
-            self.event_bus.publish(BusEvent("SONG_ENDED", {"song_id": self.current_song.id}))
+            self.event_bus.publish(BusEvent.SONG_ENDED, data={"song_id": self.current_song.song_id})
         self.queue.advance()
         self.current_song = None
         self.is_playing = False

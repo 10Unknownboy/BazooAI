@@ -42,14 +42,14 @@ class PlaybackHistory:
         try:
             record = PlayHistoryRecord(
                 event_id=event_id,
-                song_id=song.id,
+                song_id=song.song_id,
                 timestamp=time.time(),
                 score=score,
                 components=components,
                 penalties=penalties,
                 vibe=vibe,
                 energy=energy,
-                prev_song_id=prev_song.id if prev_song else None,
+                prev_song_id=prev_song.song_id if prev_song else None,
                 request_id=request_id
             )
             self.repo.save(record)

@@ -33,32 +33,33 @@ class VibeAgent:
     async def evaluate_vibe(self, event_state: EventState) -> VibeRecommendation:
         """Evaluate current event state and recommend a vibe direction."""
         
+        from app.models.base import AIMessageType
         # Try to use AI reasoning
         try:
             request = AIRequest(
-                agent_id="vibe_agent",
-                task_type="vibe_recommendation",
-                context={"event_state": event_state.model_dump(mode="json")},
-                prompt="Based on the event state, recommend a vibe direction."
+                message_type=AIMessageType.VIBE_UPDATE,
+                request_data={
+                    "event_state": event_state.model_dump(mode="json"),
+                    "prompt": "Based on the event state, recommend a vibe direction."
+                }
             )
             response = await self.ai_client.decide(request)
             
-            if response.success and response.content:
-                data = response.content
+            if response.success and response.recommended_vibe:
                 return VibeRecommendation(
-                    recommended_vibe=VibeVector(**data.get("vibe", {})),
-                    preferred_genres=data.get("genres", []),
-                    preferred_languages=data.get("languages", []),
-                    reason=data.get("reason", "AI decided"),
-                    confidence=data.get("confidence", 0.8)
+                    recommended_vibe=response.recommended_vibe,
+                    preferred_genres=response.preferred_genres or [],
+                    preferred_languages=response.preferred_languages or [],
+                    reason=response.reason or "AI decided",
+                    confidence=response.confidence or 0.8
                 )
         except Exception as e:
             logger.warning(f"AI vibe evaluation failed: {e}. Falling back to deterministic config.")
             
         # Fallback to deterministic config
         return VibeRecommendation(
-            recommended_vibe=event_state.config.base_vibe,
-            preferred_genres=event_state.config.allowed_genres,
+            recommended_vibe=event_state.event_config.starting_vibe,
+            preferred_genres=event_state.event_config.prefer_genres,
             preferred_languages=[],
             reason="Fallback to event config base vibe",
             confidence=1.0

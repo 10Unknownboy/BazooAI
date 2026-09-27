@@ -70,6 +70,7 @@ class AppSettings(BaseModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
     log_level: str = Field(default="INFO")
     log_dir: Path = Field(default=LOG_DIR)
+    local_music_dir: Path | None = Field(default=None)
 
     @classmethod
     def from_env(cls) -> "AppSettings":
@@ -104,6 +105,7 @@ class AppSettings(BaseModel):
             ),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             log_dir=Path(os.getenv("LOG_DIR", str(LOG_DIR))),
+            local_music_dir=Path(os.getenv("LOCAL_MUSIC_DIR")) if os.getenv("LOCAL_MUSIC_DIR") else None,
         )
 
 

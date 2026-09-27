@@ -79,8 +79,8 @@ class TransitionAgent:
             response = await self.ai_client.decide(request)
             
             changes = []
-            if response.success and response.content and "changes" in response.content:
-                for change_data in response.content["changes"]:
+            if response.success and response.queue_changes:
+                for change_data in response.queue_changes:
                     changes.append(QueueChange(**change_data))
                     self.event_bus.publish(BusEvent.AGENT_DECISION, source="transition_agent", data={
                         "agent": "transition_agent",

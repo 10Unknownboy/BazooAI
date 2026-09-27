@@ -43,7 +43,7 @@ class PreferenceUpdater:
     def get_adjustment(self, song: Song, event_state: Any) -> float:
         """Get score adjustment for a song based on learned preferences."""
         context_key = self._generate_context_key(event_state)
-        record = self.repo.get_preference(song.id, context_key)
+        record = self.repo.get_preference(song.song_id, context_key)
         
         if not record:
             return 0.0

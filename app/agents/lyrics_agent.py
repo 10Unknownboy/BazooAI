@@ -60,8 +60,8 @@ class LyricsAgent:
             )
             response = await self.ai_client.decide(request)
             
-            if response.success and response.content:
-                data = response.content
+            if response.success and response.lyrics_analysis:
+                data = response.lyrics_analysis
                 features = LyricsFeatures(
                     song_id=song_id,
                     language=data.get("language", "unknown"),
