@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from pydantic import Field
 
@@ -38,7 +38,10 @@ class CacheEntry(DJBaseModel):
     def is_expired(self) -> bool:
         if self.expires_at is None:
             return False
-        return utc_now() > self.expires_at
+        expires_at = self.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=utc_now().tzinfo)
+        return utc_now() > expires_at
 
     def touch(self) -> None:
         self.hit_count += 1

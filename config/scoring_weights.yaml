@@ -7,13 +7,14 @@
 positive_weights:
   vibe_match: 0.20
   energy_match: 0.15
-  genre_match: 0.10
+  genre_match: 0.09
+  artist_match: 0.05
   language_match: 0.08
   transition_score: 0.15
-  popularity: 0.05
-  event_type_match: 0.10
+  popularity: 0.03
+  event_type_match: 0.09
   request_score: 0.05
-  crowd_feedback: 0.07
+  crowd_feedback: 0.06
   learned_preference: 0.05
 
 # --- Penalty weights (applied independently, subtracted) ---

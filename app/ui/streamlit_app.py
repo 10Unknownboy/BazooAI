@@ -19,6 +19,7 @@ from app.models.base import AIMessageType, EventType, VibePreset
 from app.models.event import EventConfig
 from app.models.feedback import SongFeedback
 from app.models.request import SongRequest
+from app.music.library_enrichment import LibraryEnrichmentService
 from app.music.local_library import sync_local_library
 from app.playback.playback_controller import PlaybackController
 from app.providers.local_file_provider import LocalFileProvider
@@ -46,6 +47,7 @@ def init_system() -> dict[str, Any]:
 
     provider = LocalFileProvider(directory=str(music_dir))
     synced_songs = sync_local_library(provider)
+    enrichment_service = LibraryEnrichmentService()
     queue_manager = QueueManager()
     orchestrator = DJOrchestrator(queue_manager=queue_manager)
     playback_controller = PlaybackController(queue_manager, provider)
@@ -78,6 +80,7 @@ def init_system() -> dict[str, Any]:
     return {
         "music_dir": music_dir,
         "synced_songs": synced_songs,
+        "enrichment_service": enrichment_service,
         "provider": provider,
         "queue_manager": queue_manager,
         "orchestrator": orchestrator,
@@ -149,6 +152,8 @@ with st.sidebar:
         explicit_allowed = st.checkbox("Allow explicit tracks", value=False)
         preferred_genres = st.text_input("Preferred genres (comma-separated)")
         avoided_genres = st.text_input("Avoided genres (comma-separated)")
+        preferred_artists = st.text_input("Preferred artists (comma-separated)")
+        avoided_artists = st.text_input("Avoided artists (comma-separated)")
         allow_requests = st.checkbox("Allow guest requests", value=True)
 
         if st.button("Start event", type="primary", use_container_width=True):
@@ -175,6 +180,12 @@ with st.sidebar:
                     ],
                     avoid_genres=[
                         item.strip() for item in avoided_genres.split(",") if item.strip()
+                    ],
+                    prefer_artists=[
+                        item.strip() for item in preferred_artists.split(",") if item.strip()
+                    ],
+                    avoid_artists=[
+                        item.strip() for item in avoided_artists.split(",") if item.strip()
                     ],
                     allow_requests=allow_requests,
                 )
@@ -204,13 +215,43 @@ with st.sidebar:
             st.rerun()
         except Exception as error:
             st.error(f"Could not refresh local music: {error}")
+    if st.button("Fetch MusicBrainz metadata + LRCLIB lyrics", use_container_width=True):
+        active_job = system.get("enrichment_future")
+        if active_job and not active_job.done():
+            st.warning("Library enrichment is already running.")
+        else:
+            system["enrichment_future"] = _run_coroutine(
+                loop, system["enrichment_service"].enrich_library()
+            )
+            st.success("Enrichment started in the background; playback remains available.")
 
-state = runtime_state.get_event_state()
-queue_snapshot = runtime_state.get_queue_state() or {"items": []}
-queue_items = queue_snapshot.get("items", [])
 tabs = st.tabs(["Dashboard Console", "Debug Console", "API Console"])
 
-with tabs[0]:
+@st.fragment(run_every="2s")
+def render_dashboard_console():
+    state = runtime_state.get_event_state()
+    queue_snapshot = runtime_state.get_queue_state() or {"items": []}
+    queue_items = queue_snapshot.get("items", [])
+    job = system.get("enrichment_future")
+    if job:
+        if job.done():
+            try:
+                result = job.result()
+            except Exception as error:
+                st.error(f"Library enrichment failed: {error}")
+            else:
+                st.success(
+                    f"Metadata/lyrics enrichment complete: {result['metadata_updated']} "
+                    f"metadata updates, {result['lyrics_found']} lyric matches, "
+                    f"{result['errors']} errors."
+                )
+            system["enrichment_future"] = None
+        else:
+            progress = system["enrichment_service"].progress
+            st.info(
+                f"Enrichment running: {progress['checked']}/{progress['total']} tracks checked; "
+                f"{progress['lyrics_found']} lyrics found."
+            )
     if not state:
         st.info("Create an event from the sidebar to start the DJ.")
     else:
@@ -378,6 +419,11 @@ with tabs[0]:
             else:
                 st.caption("Start playback before submitting track feedback.")
 
+with tabs[0]:
+    render_dashboard_console()
+
+state = runtime_state.get_event_state()
+
 with tabs[1]:
     st.subheader("Runtime state and decision history")
     st.json(state or {})
@@ -466,4 +512,4 @@ with tabs[2]:
                 f"{message.source}: {message.data}"
             )
 
-st.caption("Use the page refresh control to view playback and runtime updates.")
+st.caption("Dashboard runtime and queue refresh automatically while the page is open.")

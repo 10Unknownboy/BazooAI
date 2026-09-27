@@ -70,6 +70,35 @@ def _audio_features_from_row(row: AudioFeaturesTable) -> AudioFeatures:
     )
 
 
+def _lyrics_features_from_row(row: LyricsFeaturesTable) -> LyricsFeatures:
+    return LyricsFeatures(
+        song_id=row.song_id,
+        language=row.language,
+        themes=row.themes or [],
+        sentiment=row.sentiment,
+        mood=row.mood,
+        romance=row.romance or 0.0,
+        sadness=row.sadness or 0.0,
+        celebration=row.celebration or 0.0,
+        aggression=row.aggression or 0.0,
+        sexual_content=row.sexual_content or 0.0,
+        explicitness=row.explicitness or 0.0,
+        violence=row.violence or 0.0,
+        drugs=row.drugs or 0.0,
+        breakup=row.breakup or 0.0,
+        nostalgia=row.nostalgia or 0.0,
+        family_friendly=row.family_friendly if row.family_friendly is not None else True,
+        event_suitability=row.event_suitability or {},
+        source=row.source,
+        content_hash=row.content_hash,
+        analysis_model=row.analysis_model,
+        analysis_version=row.analysis_version or 1,
+        analysis_status=row.analysis_status or "PENDING",
+        analyzed_at=row.analyzed_at,
+        lyrics_embedding=row.lyrics_embedding,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Repository factory
 # ---------------------------------------------------------------------------
@@ -276,6 +305,20 @@ class SongRepository:
             song.audio_features = features
             if song.audio_features:
                 song.audio_analysis_status = song.audio_features.analysis_status
+        lyrics_rows = (
+            self.session.execute(
+                select(LyricsFeaturesTable).where(
+                    LyricsFeaturesTable.song_id.in_([song.song_id for song in songs])
+                )
+            )
+            .scalars()
+            .all()
+        )
+        lyrics_by_song = {row.song_id: _lyrics_features_from_row(row) for row in lyrics_rows}
+        for song in songs:
+            song.lyrics_features = lyrics_by_song.get(song.song_id)
+            if song.lyrics_features:
+                song.lyrics_analysis_status = song.lyrics_features.analysis_status
         return songs
 
     def _row_to_model(self, row: SongTable) -> Song:
@@ -423,32 +466,7 @@ class LyricsFeaturesRepository:
         ).scalar_one_or_none()
         if row is None:
             return None
-        return LyricsFeatures(
-            song_id=row.song_id,
-            language=row.language,
-            themes=row.themes or [],
-            sentiment=row.sentiment,
-            mood=row.mood,
-            romance=row.romance or 0.0,
-            sadness=row.sadness or 0.0,
-            celebration=row.celebration or 0.0,
-            aggression=row.aggression or 0.0,
-            sexual_content=row.sexual_content or 0.0,
-            explicitness=row.explicitness or 0.0,
-            violence=row.violence or 0.0,
-            drugs=row.drugs or 0.0,
-            breakup=row.breakup or 0.0,
-            nostalgia=row.nostalgia or 0.0,
-            family_friendly=row.family_friendly,
-            event_suitability=row.event_suitability or {},
-            source=row.source,
-            content_hash=row.content_hash,
-            analysis_model=row.analysis_model,
-            analysis_version=row.analysis_version or 1,
-            analysis_status=row.analysis_status or "PENDING",
-            analyzed_at=row.analyzed_at,
-            lyrics_embedding=row.lyrics_embedding,
-        )
+        return _lyrics_features_from_row(row)
 
     def is_analyzed(
         self, song_id: str, analysis_model: str | None = None, analysis_version: int | None = None

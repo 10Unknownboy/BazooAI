@@ -36,6 +36,7 @@ class DJOrchestrator:
         self.event_bus = get_event_bus()
         self.runtime_state = get_runtime_state()
         self.current_state: EventState | None = None
+        self._manual_vibe_override = False
         self.is_running = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._decision_lock = asyncio.Lock()
@@ -81,6 +82,7 @@ class DJOrchestrator:
         self._loop = asyncio.get_running_loop()
         logger.info(f"Starting DJ Orchestrator for event: {event_config.event_id}")
         starting_vibe = VibeVector.from_preset(event_config.starting_vibe)
+        self._manual_vibe_override = False
         self.current_state = EventState(
             event_id=event_config.event_id,
             event_config=event_config,
@@ -142,6 +144,8 @@ class DJOrchestrator:
             self.current_state.current_vibe = preset
             self.current_state.vibe_vector = VibeVector.from_preset(preset)
             self.current_state.target_energy = self.current_state.vibe_vector.energy
+            self._manual_vibe_override = True
+            self.queue_manager.clear_reconsidering()
         elif command == "energy" and args:
             try:
                 value = float(args[0])
@@ -153,6 +157,11 @@ class DJOrchestrator:
             else:
                 value /= 100.0
             self.current_state.target_energy = min(1.0, max(0.0, value))
+            self.current_state.vibe_vector = self.current_state.vibe_vector.model_copy(
+                update={"energy": self.current_state.target_energy}
+            )
+            self._manual_vibe_override = True
+            self.queue_manager.clear_reconsidering()
         else:
             return
 
@@ -171,9 +180,15 @@ class DJOrchestrator:
                 self.current_state.update_progress()
             self.current_state.advance_epoch()
 
-            if trigger in {"event_start", "manual_command", "feedback_received"}:
+            if trigger in {"event_start", "feedback_received"} and not self._manual_vibe_override:
                 recommendation = await self.vibe_agent.evaluate_vibe(self.current_state)
                 self.current_state.vibe_vector = recommendation.recommended_vibe
+                self.current_state.target_energy = recommendation.recommended_vibe.energy
+                self.current_state.agent_preferred_genres = recommendation.preferred_genres
+                self.current_state.agent_avoided_genres = recommendation.avoid_genres
+                self.current_state.agent_preferred_languages = recommendation.preferred_languages
+                self.current_state.agent_preferred_artists = recommendation.preferred_artists
+                self.current_state.agent_avoided_artists = recommendation.avoid_artists
                 self.current_state.agent_statuses["VIBE"] = "ACTIVE"
 
             if self.queue_manager.needs_refill():
@@ -260,6 +275,11 @@ class DJOrchestrator:
             "vibe": state.vibe_vector.model_dump(mode="json"),
             "preferred_genres": state.event_config.prefer_genres,
             "preferred_languages": state.event_config.languages,
+            "agent_preferred_genres": state.agent_preferred_genres,
+            "agent_avoided_genres": state.agent_avoided_genres,
+            "agent_preferred_languages": state.agent_preferred_languages,
+            "agent_preferred_artists": state.agent_preferred_artists,
+            "agent_avoided_artists": state.agent_avoided_artists,
         }
         for candidate in selected:
             item = self.queue_manager.add_song(
