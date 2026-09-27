@@ -85,8 +85,27 @@ with st.sidebar:
             playback_controller.stop()
             st.rerun()
             
+
         st.subheader("System Status")
         st.write(f"Songs in library: {len(provider._index)}")
+        
+        st.markdown("---")
+        st.subheader("Guest Requests API")
+        st.write("Scan to submit requests:")
+        try:
+            import requests
+            import io
+            from PIL import Image
+            # Fetch QR code from local Guest API if running
+            qr_res = requests.get("http://127.0.0.1:8003/qr", timeout=1)
+            if qr_res.status_code == 200:
+                img = Image.open(io.BytesIO(qr_res.content))
+                st.image(img, use_container_width=True)
+            else:
+                st.warning("Guest API QR not available (API might not be running).")
+        except Exception:
+            st.warning("Guest API not running. Run API separately to enable QR requests.")
+
 
 if orchestrator.is_running:
     col1, col2 = st.columns(2)
