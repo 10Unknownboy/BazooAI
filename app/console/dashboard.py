@@ -51,10 +51,14 @@ class DashboardConsole:
         return layout
 
     def generate_header(self) -> Panel:
-        event_name = getattr(self.state, 'event_name', 'UNKNOWN EVENT')
-        vibe = getattr(self.state, 'current_vibe', 'MIXED')
-        energy = getattr(self.state, 'current_energy', 50)
-        progress = getattr(self.state, 'event_progress', 0)
+        state = self.state.get_event_state() or {}
+        event_config = state.get("event_config") or {}
+        event_name = event_config.get("name", state.get("event_id", "UNKNOWN EVENT"))
+        vibe = state.get("current_vibe", "MIXED")
+        if isinstance(vibe, dict):
+            vibe = ", ".join(f"{key}={value:.2f}" for key, value in vibe.items())
+        energy = round(state.get("current_energy", 0.0) * 100)
+        progress = round(state.get("event_progress", 0.0) * 100)
         
         grid = Table.grid(expand=True)
         grid.add_column(justify="left", ratio=1)
@@ -69,12 +73,16 @@ class DashboardConsole:
         return Panel(grid, title="AI DJ", border_style="bold blue")
 
     def generate_now_playing(self) -> Panel:
-        np = getattr(self.state, 'now_playing', None)
+        state = self.state.get_event_state() or {}
+        current_song_id = state.get("current_song_id")
+        queue_state = self.state.get_queue_state() or {}
+        queue = queue_state.get("items", [])
+        np = next((item for item in queue if item.get("song_id") == current_song_id), None)
         if not np:
             return Panel(Text("Nothing currently playing", justify="center"), title="NOW PLAYING")
         
-        title = np.get("title", "Unknown Title")
-        artist = np.get("artist", "Unknown Artist")
+        title = np.get("song_title", np.get("title", "Unknown Title"))
+        artist = np.get("song_artist", np.get("artist", "Unknown Artist"))
         bpm = np.get("bpm", 0)
         energy = np.get("energy", 0.0)
         pos = np.get("position", 0)
@@ -88,7 +96,7 @@ class DashboardConsole:
         return Panel(content, title="NOW PLAYING", border_style="green")
 
     def generate_queue(self) -> Panel:
-        queue = getattr(self.state, 'queue', [])
+        queue = (self.state.get_queue_state() or {}).get("items", [])
         table = Table(show_header=False, expand=True, box=None)
         table.add_column("Pos", width=3)
         table.add_column("Song")
@@ -96,9 +104,9 @@ class DashboardConsole:
         table.add_column("Score", justify="right")
         
         for i, song in enumerate(queue[:5], 1):
-            lock = song.get("lock_status", "🟡")
-            score = song.get("score", 0.0)
-            title = song.get("title", "Unknown")
+            lock = song.get("lock_status", "FLEXIBLE")
+            score = song.get("final_score", song.get("score", 0.0))
+            title = song.get("song_title", song.get("title", "Unknown"))
             table.add_row(f"{i}.", title, lock, f"{score:.1f}")
             
         if not queue:
@@ -107,7 +115,7 @@ class DashboardConsole:
         return Panel(table, title="QUEUE", border_style="cyan")
 
     def generate_agents(self) -> Panel:
-        agents = getattr(self.state, 'agent_statuses', {})
+        agents = self.state.get_agent_statuses()
         text = Text()
         
         # Default agents to show if state is empty
@@ -130,7 +138,13 @@ class DashboardConsole:
         return Panel(text, title="AGENTS", border_style="magenta")
 
     def generate_requests(self) -> Panel:
-        stats = getattr(self.state, 'request_stats', {"pending": 0, "accepted": 0, "deferred": 0, "rejected": 0})
+        state = self.state.get_event_state() or {}
+        stats = {
+            "pending": 0,
+            "accepted": len(state.get("accepted_requests", [])),
+            "deferred": 0,
+            "rejected": 0,
+        }
         
         text = (
             f"Pending:  [yellow]{stats['pending']}[/yellow]\n"

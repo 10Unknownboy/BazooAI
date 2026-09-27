@@ -1,16 +1,20 @@
 from __future__ import annotations
-import os
+
+import hashlib
 import logging
+import os
 from pathlib import Path
 
 try:
     import pygame
+
     PYGAME_AVAILABLE = True
 except ImportError:
     PYGAME_AVAILABLE = False
 
 try:
     from tinytag import TinyTag
+
     TINYTAG_AVAILABLE = True
 except ImportError:
     TINYTAG_AVAILABLE = False
@@ -19,10 +23,11 @@ from app.providers.base import MusicProvider
 
 logger = logging.getLogger(__name__)
 
+
 class LocalFileProvider(MusicProvider):
     """Local file provider with actual audio playback via pygame."""
-    
-    SUPPORTED_EXTS = {'.mp3', '.wav', '.flac', '.ogg'}
+
+    SUPPORTED_EXTS = {".mp3", ".wav", ".flac", ".ogg"}
 
     def __init__(self, directory: str):
         global PYGAME_AVAILABLE
@@ -40,28 +45,33 @@ class LocalFileProvider(MusicProvider):
                 logger.error(f"Failed to initialize pygame mixer: {e}")
                 PYGAME_AVAILABLE = False
         else:
-            logger.warning("pygame not installed. Audio playback will use pseudo-playback fallback.")
+            logger.warning(
+                "pygame not installed. Audio playback will use pseudo-playback fallback."
+            )
 
         self._build_index()
 
     def _build_index(self):
+        self._index.clear()
         logger.info(f"Scanning local directory: {self.directory}")
         if not self.directory or not os.path.exists(self.directory):
             logger.warning(f"Directory {self.directory} does not exist.")
             return
-            
+
         for root, _, files in os.walk(self.directory):
             for file in files:
                 ext = Path(file).suffix.lower()
                 if ext in self.SUPPORTED_EXTS:
                     path = os.path.join(root, file)
-                    # use string path as seed for hash instead of random to ensure stable IDs across restarts
-                    song_id = f"local_{abs(hash(path))}"
-                    
+                    normalized_path = os.path.normcase(os.path.abspath(path))
+                    song_id = (
+                        f"local_{hashlib.sha256(normalized_path.encode('utf-8')).hexdigest()[:20]}"
+                    )
+
                     title = Path(file).stem
                     artist = "Unknown Artist"
                     duration = 210.0
-                    
+
                     if TINYTAG_AVAILABLE:
                         try:
                             tag = TinyTag.get(path)
@@ -80,9 +90,13 @@ class LocalFileProvider(MusicProvider):
                         "artist": artist,
                         "path": path,
                         "duration": duration,
-                        "type": "local"
+                        "type": "local",
                     }
         logger.info(f"Indexed {len(self._index)} local files.")
+
+    def refresh(self) -> None:
+        """Rescan the local directory and refresh the provider index."""
+        self._build_index()
 
     def search(self, query: str, limit: int = 10) -> list[dict]:
         query = query.lower()
@@ -95,65 +109,72 @@ class LocalFileProvider(MusicProvider):
     def get_song(self, song_id: str) -> dict | None:
         return self._index.get(song_id)
 
+    def list_songs(self) -> list[dict]:
+        """Return indexed local tracks for database synchronization."""
+        return [song.copy() for song in self._index.values()]
+
+    @property
+    def audio_available(self) -> bool:
+        """Whether the local audio output backend initialized successfully."""
+        return PYGAME_AVAILABLE
+
     def play(self, song_id: str) -> bool:
         song = self.get_song(song_id)
         if not song:
             return False
-            
-        import time
-        if PYGAME_AVAILABLE:
-            try:
-                pygame.mixer.music.load(song["path"])
-                pygame.mixer.music.play()
-                self._playing = True
-                self._paused = False
-                self._current_song = song
-                logger.info(f"LocalFileProvider playing: {song['title']}")
-                return True
-            except Exception as e:
-                logger.error(f"Failed to play {song['path']}: {e}")
-                return False
-        else:
-            self._current_song = song
-            self._playing = True
-            self._paused = False
-            self._start_time = time.time()
-            self._elapsed = 0.0
-            logger.info(f"LocalFileProvider pseudo-playing: {song['title']}")
-            return True
+
+        if not PYGAME_AVAILABLE:
+            logger.error("Cannot play %s: no audio output device is available", song["title"])
+            return False
+        try:
+            pygame.mixer.music.load(song["path"])
+            pygame.mixer.music.play()
+        except pygame.error, OSError:
+            logger.exception("Failed to play local track %s", song["path"])
+            self._playing = False
+            self._current_song = None
+            return False
+        self._playing = True
+        self._paused = False
+        self._current_song = song
+        logger.info("LocalFileProvider playing: %s", song["title"])
+        return True
 
     def pause(self) -> bool:
-        import time
-        if PYGAME_AVAILABLE and self._playing:
+        if not PYGAME_AVAILABLE or not self._playing or self._paused:
+            return False
+        try:
             pygame.mixer.music.pause()
-        elif self._playing and not self._paused:
-            self._elapsed += time.time() - getattr(self, "_start_time", time.time())
+        except pygame.error:
+            logger.exception("Failed to pause local playback")
+            return False
         self._paused = True
         logger.info("LocalFileProvider paused")
         return True
 
     def resume(self) -> bool:
-        import time
-        if self._current_song and self._paused:
-            if PYGAME_AVAILABLE:
-                pygame.mixer.music.unpause()
-            else:
-                self._start_time = time.time()
-            self._paused = False
-            logger.info("LocalFileProvider resumed")
-            return True
-        return False
+        if not PYGAME_AVAILABLE or not self._current_song or not self._paused:
+            return False
+        try:
+            pygame.mixer.music.unpause()
+        except pygame.error:
+            logger.exception("Failed to resume local playback")
+            return False
+        self._paused = False
+        self._playing = True
+        logger.info("LocalFileProvider resumed")
+        return True
 
     def stop(self) -> bool:
         if PYGAME_AVAILABLE:
             try:
                 pygame.mixer.music.stop()
-            except Exception:
-                pass
+            except pygame.error:
+                logger.exception("Failed to stop local playback")
+                return False
         self._playing = False
         self._paused = False
         self._current_song = None
-        self._elapsed = 0.0
         logger.info("LocalFileProvider stopped")
         return True
 
@@ -168,29 +189,24 @@ class LocalFileProvider(MusicProvider):
         return True
 
     def seek(self, seconds: float) -> bool:
-        import time
-        if PYGAME_AVAILABLE and self._playing:
-            try:
-                pygame.mixer.music.set_pos(seconds)
-                logger.info(f"LocalFileProvider seek to {seconds}")
-                return True
-            except Exception as e:
-                logger.error(f"Seek failed: {e}")
-                return False
-        elif self._playing:
-            self._elapsed = seconds
-            self._start_time = time.time()
-            logger.info(f"LocalFileProvider pseudo-seek to {seconds}")
-            return True
-        return False
+        if not PYGAME_AVAILABLE or not self._playing:
+            return False
+        try:
+            pygame.mixer.music.set_pos(seconds)
+        except pygame.error:
+            logger.exception("Failed to seek in local playback")
+            return False
+        logger.info("LocalFileProvider seek to %s", seconds)
+        return True
 
     def volume(self, value: int) -> bool:
-        if PYGAME_AVAILABLE:
-            # value is 0-100, pygame volume is 0.0 to 1.0
-            try:
-                pygame.mixer.music.set_volume(value / 100.0)
-            except Exception:
-                pass
+        if not PYGAME_AVAILABLE:
+            return False
+        try:
+            pygame.mixer.music.set_volume(value / 100.0)
+        except pygame.error:
+            logger.exception("Failed to set local playback volume")
+            return False
         logger.info(f"LocalFileProvider volume set to {value}")
         return True
 
@@ -201,34 +217,27 @@ class LocalFileProvider(MusicProvider):
         return self._current_song
 
     def get_remaining_time(self) -> float:
-        import time
-        if not self._current_song:
+        if not self._current_song or not PYGAME_AVAILABLE or not self._playing:
             return 0.0
-        if PYGAME_AVAILABLE and self._playing and not self._paused:
-            try:
-                pos_ms = pygame.mixer.music.get_pos()
-                if pos_ms >= 0:
-                    pos_sec = pos_ms / 1000.0
-                    return max(0.0, self._current_song["duration"] - pos_sec)
-            except Exception:
-                pass
-        elif self._playing:
-            elapsed = getattr(self, "_elapsed", 0.0)
-            if not self._paused:
-                elapsed += time.time() - getattr(self, "_start_time", time.time())
-            return max(0.0, self._current_song["duration"] - elapsed)
-        return 0.0
+        try:
+            pos_ms = pygame.mixer.music.get_pos()
+        except pygame.error:
+            logger.exception("Failed to read local playback position")
+            return 0.0
+        if pos_ms < 0:
+            return 0.0
+        return max(0.0, self._current_song["duration"] - pos_ms / 1000.0)
 
     def is_playing(self) -> bool:
-        if PYGAME_AVAILABLE:
-            try:
-                if pygame.mixer.music.get_busy() or (self._playing and self._paused):
-                    return True
-            except Exception:
-                pass
-        
-        if self._playing:
-            if self.get_remaining_time() <= 0:
-                self._playing = False
-                self._current_song = None
-        return self._playing
+        if not PYGAME_AVAILABLE or not self._playing:
+            return False
+        if self._paused:
+            return False
+        try:
+            playing = pygame.mixer.music.get_busy()
+        except pygame.error:
+            logger.exception("Failed to query local playback state")
+            return False
+        if not playing:
+            self._playing = False
+        return playing

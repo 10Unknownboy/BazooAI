@@ -4,16 +4,25 @@ from typing import Optional, Dict, Any, List
 
 from app.models.song import Song
 from app.models.event import EventState
-from app.models.agent import AIRequest, AIResponse, ScoringSnapshot
+from app.models.agent import AIRequest
 from app.agents.ai_client import AIModelClient
 
 logger = logging.getLogger(__name__)
 
 class ScoredCandidate:
-    def __init__(self, song: Song, score: float, breakdown: Dict[str, float]):
+    def __init__(
+        self,
+        song: Song,
+        score: float,
+        breakdown: Dict[str, float],
+        penalties: Dict[str, float] | None = None,
+        request_id: str | None = None,
+    ):
         self.song = song
         self.score = score
         self.breakdown = breakdown
+        self.penalties = penalties or {}
+        self.request_id = request_id
 
 class SongSelectionAgent:
     """Agent responsible for selecting and scoring candidate songs."""
@@ -33,7 +42,7 @@ class SongSelectionAgent:
             from app.models.base import AIMessageType
             candidates_data = [{"id": c.song.song_id, "title": c.song.title, "artist": c.song.artist} for c in top_candidates]
             request = AIRequest(
-                message_type=AIMessageType.QUEUE_REVIEW,
+                message_type=AIMessageType.DJ_DECISION,
                 candidate_songs=candidates_data,
                 request_data={
                     "event_state": event_state.model_dump(mode="json"),

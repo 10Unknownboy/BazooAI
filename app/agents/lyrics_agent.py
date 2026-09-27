@@ -44,7 +44,9 @@ class LyricsAgent:
         if not lyrics_text:
             logger.warning(f"No lyrics provided for {song_id}. Returning default features.")
             return LyricsFeatures(song_id=song_id)
-            
+
+        from app.models.base import AIMessageType
+
         try:
             # We don't send full copyrighted text if possible, or we send it
             # just for analysis and don't store it
@@ -53,10 +55,11 @@ class LyricsAgent:
             text_to_analyze = lyrics_text[:2000] if len(lyrics_text) > 2000 else lyrics_text
             
             request = AIRequest(
-                agent_id="lyrics_agent",
-                task_type="lyrics_analysis",
-                context={"lyrics": text_to_analyze},
-                prompt="Analyze these lyrics. Identify language, themes, sentiment (-1 to 1), mood, and score various content categories (0 to 1) like romance, sadness, celebration, explicit content, etc."
+                message_type=AIMessageType.LYRIC_ANALYSIS,
+                lyrics_data={"lyrics": text_to_analyze},
+                request_data={
+                    "prompt": "Analyze the lyrics. Return the language, themes, sentiment (-1 to 1), mood, and content scores (0 to 1) for romance, sadness, celebration, aggression, sexual content, explicitness, violence, drugs, breakup, and nostalgia."
+                },
             )
             response = await self.ai_client.decide(request)
             

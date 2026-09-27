@@ -41,7 +41,11 @@ class CommandHandler:
         if hasattr(self, handler_name):
             try:
                 result = getattr(self, handler_name)(args)
-                self.bus.publish(BusEvent(type="COMMAND_EXECUTED", payload={"command": command, "args": args, "result": result.model_dump()}))
+                self.bus.publish(
+                    BusEvent.COMMAND_EXECUTED,
+                    source="command_handler",
+                    data={"command": command, "args": args, "result": result.model_dump()},
+                )
                 return result
             except Exception as e:
                 logger.error(f"Error executing command {command}: {e}", exc_info=True)
@@ -51,23 +55,23 @@ class CommandHandler:
 
     # Static commands
     def handle_play(self, args: list[str]) -> CommandResult:
-        self.bus.publish(BusEvent(type="PLAYBACK_RESUMED", payload={}))
+        self.bus.publish(BusEvent.PLAYBACK_RESUMED, source="command_handler")
         return CommandResult(success=True, message="Playback resumed.")
 
     def handle_pause(self, args: list[str]) -> CommandResult:
-        self.bus.publish(BusEvent(type="PLAYBACK_PAUSED", payload={}))
+        self.bus.publish(BusEvent.PLAYBACK_PAUSED, source="command_handler")
         return CommandResult(success=True, message="Playback paused.")
         
     def handle_stop(self, args: list[str]) -> CommandResult:
-        self.bus.publish(BusEvent(type="PLAYBACK_STOPPED", payload={}))
+        self.bus.publish(BusEvent.PLAYBACK_STOPPED, source="command_handler")
         return CommandResult(success=True, message="Playback stopped.")
 
     def handle_skip(self, args: list[str]) -> CommandResult:
-        self.bus.publish(BusEvent(type="PLAYBACK_SKIPPED", payload={}))
+        self.bus.publish(BusEvent.PLAYBACK_SKIPPED, source="command_handler")
         return CommandResult(success=True, message="Skipped to next track.")
 
     def handle_previous(self, args: list[str]) -> CommandResult:
-        self.bus.publish(BusEvent(type="PLAYBACK_PREVIOUS", payload={}))
+        self.bus.publish(BusEvent.PLAYBACK_PREVIOUS, source="command_handler")
         return CommandResult(success=True, message="Going to previous track.")
 
     def handle_volume(self, args: list[str]) -> CommandResult:
@@ -76,7 +80,7 @@ class CommandHandler:
         try:
             vol = int(args[0])
             if 0 <= vol <= 100:
-                self.bus.publish(BusEvent(type="VOLUME_CHANGED", payload={"volume": vol}))
+                self.bus.publish(BusEvent.VOLUME_CHANGED, source="command_handler", data={"volume": vol})
                 return CommandResult(success=True, message=f"Volume set to {vol}.")
             return CommandResult(success=False, message="Volume must be between 0 and 100.")
         except ValueError:
@@ -87,27 +91,29 @@ class CommandHandler:
             return CommandResult(success=False, message="Usage: seek <seconds>")
         try:
             sec = int(args[0])
-            self.bus.publish(BusEvent(type="SEEK_REQUESTED", payload={"seconds": sec}))
+            if sec < 0:
+                return CommandResult(success=False, message="Seek position cannot be negative.")
+            self.bus.publish(BusEvent.SEEK_REQUESTED, source="command_handler", data={"seconds": sec})
             return CommandResult(success=True, message=f"Seeking to {sec}s.")
         except ValueError:
             return CommandResult(success=False, message="Invalid seconds value.")
 
     def handle_queue(self, args: list[str]) -> CommandResult:
         if not args:
-            return CommandResult(success=True, message="Displaying queue...", data=self.state.queue)
+            return CommandResult(success=True, message="Displaying queue...", data=self.state.get_queue_state())
         subcmd = args[0].lower()
         if subcmd == "add":
             query = " ".join(args[1:])
-            self.bus.publish(BusEvent(type="QUEUE_ADD_REQUESTED", payload={"query": query}))
+            self.bus.publish(BusEvent.QUEUE_ADD_REQUESTED, source="command_handler", data={"query": query})
             return CommandResult(success=True, message=f"Requested to add: {query}")
         elif subcmd == "remove":
             pos = int(args[1]) if len(args) > 1 and args[1].isdigit() else -1
             if pos >= 0:
-                self.bus.publish(BusEvent(type="QUEUE_REMOVE_REQUESTED", payload={"position": pos}))
+                self.bus.publish(BusEvent.QUEUE_REMOVE_REQUESTED, source="command_handler", data={"position": pos})
                 return CommandResult(success=True, message=f"Requested to remove position: {pos}")
             return CommandResult(success=False, message="Invalid position.")
         elif subcmd == "clear":
-            self.bus.publish(BusEvent(type="QUEUE_CLEAR_REQUESTED", payload={}))
+            self.bus.publish(BusEvent.QUEUE_CLEAR_REQUESTED, source="command_handler")
             return CommandResult(success=True, message="Requested to clear queue.")
         return CommandResult(success=False, message=f"Unknown queue subcommand: {subcmd}")
 
@@ -116,13 +122,13 @@ class CommandHandler:
             return CommandResult(success=False, message="Usage: event <pause|resume|end>")
         subcmd = args[0].lower()
         if subcmd == "pause":
-            self.bus.publish(BusEvent(type="EVENT_PAUSED", payload={}))
+            self.bus.publish(BusEvent.EVENT_PAUSED, source="command_handler")
             return CommandResult(success=True, message="Event paused.")
         elif subcmd == "resume":
-            self.bus.publish(BusEvent(type="EVENT_RESUMED", payload={}))
+            self.bus.publish(BusEvent.EVENT_RESUMED, source="command_handler")
             return CommandResult(success=True, message="Event resumed.")
         elif subcmd == "end":
-            self.bus.publish(BusEvent(type="EVENT_ENDED", payload={}))
+            self.bus.publish(BusEvent.EVENT_ENDED, source="command_handler")
             return CommandResult(success=True, message="Event ended.")
         return CommandResult(success=False, message=f"Unknown event subcommand: {subcmd}")
 
@@ -131,7 +137,7 @@ class CommandHandler:
         if not args:
             return CommandResult(success=False, message="Usage: vibe <preset>")
         preset = args[0].lower()
-        self.bus.publish(BusEvent(type="VIBE_CHANGE_REQUESTED", payload={"preset": preset}))
+        self.bus.publish(BusEvent.VIBE_CHANGE_REQUESTED, source="command_handler", data={"preset": preset})
         return CommandResult(success=True, message=f"Requested vibe change to: {preset}")
 
     def handle_energy(self, args: list[str]) -> CommandResult:
@@ -141,11 +147,11 @@ class CommandHandler:
         try:
             if val_str.startswith('+') or val_str.startswith('-'):
                 val = int(val_str)
-                self.bus.publish(BusEvent(type="ENERGY_CHANGE_RELATIVE", payload={"delta": val}))
+                self.bus.publish(BusEvent.ENERGY_CHANGE_RELATIVE, source="command_handler", data={"delta": val})
                 return CommandResult(success=True, message=f"Requested energy change by {val}")
             else:
                 val = int(val_str)
-                self.bus.publish(BusEvent(type="ENERGY_CHANGE_ABSOLUTE", payload={"value": val}))
+                self.bus.publish(BusEvent.ENERGY_CHANGE_ABSOLUTE, source="command_handler", data={"value": val})
                 return CommandResult(success=True, message=f"Requested energy set to {val}")
         except ValueError:
             return CommandResult(success=False, message="Invalid energy value.")
@@ -154,44 +160,66 @@ class CommandHandler:
         if not args:
             return CommandResult(success=False, message="Usage: request \"<song name>\"")
         song_name = " ".join(args)
-        self.bus.publish(BusEvent(type="USER_SONG_REQUESTED", payload={"query": song_name}))
+        from app.models.request import SongRequest
+
+        request = SongRequest(requested_song_query=song_name, requester="console")
+        self.bus.publish(
+            BusEvent.REQUEST_RECEIVED,
+            source="command_handler",
+            data={"request": request.model_dump(mode="json")},
+        )
         return CommandResult(success=True, message=f"Song request submitted: {song_name}")
 
     def handle_feedback(self, args: list[str]) -> CommandResult:
         if not args:
             return CommandResult(success=False, message="Usage: feedback <1-10> [energy] [song_choice] [transition] [vibe]")
         try:
-            overall = int(args[0])
-            payload = {"overall": overall}
-            if len(args) == 5:
-                payload.update({
-                    "energy": int(args[1]),
-                    "song_choice": int(args[2]),
-                    "transition": int(args[3]),
-                    "vibe": int(args[4])
-                })
-            self.bus.publish(BusEvent(type="USER_FEEDBACK_SUBMITTED", payload=payload))
+            if len(args) not in (1, 5):
+                return CommandResult(success=False, message="Provide either one rating or all five ratings.")
+            event_state = self.state.get_event_state() or {}
+            if not event_state.get("event_id") or not event_state.get("current_song_id"):
+                return CommandResult(success=False, message="Feedback requires an active event and a current song.")
+            from app.models.feedback import SongFeedback
+
+            ratings = [int(value) for value in args]
+            feedback = SongFeedback(
+                event_id=event_state["event_id"],
+                song_id=event_state["current_song_id"],
+                overall_rating=ratings[0],
+                energy_rating=ratings[1] if len(ratings) == 5 else None,
+                song_choice_rating=ratings[2] if len(ratings) == 5 else None,
+                transition_rating=ratings[3] if len(ratings) == 5 else None,
+                vibe_rating=ratings[4] if len(ratings) == 5 else None,
+                current_energy=event_state.get("current_energy"),
+                decision_epoch=event_state.get("decision_epoch", 0),
+            )
+            self.bus.publish(
+                BusEvent.FEEDBACK_RECEIVED,
+                source="command_handler",
+                data={"feedback": feedback.model_dump(mode="json")},
+            )
             return CommandResult(success=True, message="Feedback submitted.")
         except ValueError:
             return CommandResult(success=False, message="Invalid feedback values.")
 
     def handle_status(self, args: list[str]) -> CommandResult:
-        return CommandResult(success=True, message="Current status", data=self.state.event_state)
+        return CommandResult(success=True, message="Current status", data=self.state.get_event_state())
 
     def handle_history(self, args: list[str]) -> CommandResult:
-        return CommandResult(success=True, message="Play history", data=self.state.history)
+        state = self.state.get_event_state() or {}
+        return CommandResult(success=True, message="Play history", data=state.get("recent_history", []))
 
     def handle_scores(self, args: list[str]) -> CommandResult:
-        return CommandResult(success=True, message="Latest scoring", data=self.state.latest_scores)
+        return CommandResult(success=True, message="Scoring details are available in the Debug Console.")
 
     def handle_why(self, args: list[str]) -> CommandResult:
-        return CommandResult(success=True, message="Explanation", data=self.state.latest_reasoning)
+        return CommandResult(success=True, message="Decision details are available in the Debug Console.")
 
     def handle_agents(self, args: list[str]) -> CommandResult:
-        return CommandResult(success=True, message="Agent statuses", data=self.state.agent_statuses)
+        return CommandResult(success=True, message="Agent statuses", data=self.state.get_agent_statuses())
 
     def handle_learning(self, args: list[str]) -> CommandResult:
-        return CommandResult(success=True, message="Learning stats", data=self.state.learning_stats)
+        return CommandResult(success=True, message="Learning stats are not yet exposed by RuntimeState.")
 
     def handle_help(self, args: list[str]) -> CommandResult:
         from app.console.help_system import HelpSystem

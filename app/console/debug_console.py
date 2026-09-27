@@ -4,9 +4,9 @@ import logging
 from datetime import datetime
 from rich.console import Console
 from rich.theme import Theme
-from queue import Queue
+from queue import Empty, Queue
 
-from app.event.event_bus import get_event_bus, BusEvent
+from app.event.event_bus import BusEvent, BusMessage, get_event_bus
 
 logger = logging.getLogger(__name__)
 
@@ -17,33 +17,35 @@ class DebugConsole:
     def __init__(self) -> None:
         self.console = Console()
         self.bus = get_event_bus()
-        self.event_queue: Queue[BusEvent] = Queue()
+        self.event_queue: Queue[BusMessage] = Queue()
         self.running = False
         
         self.bus.subscribe_all(self.on_event)
 
-    def on_event(self, event: BusEvent) -> None:
+    def on_event(self, event: BusMessage) -> None:
         self.event_queue.put(event)
 
-    def format_event(self, event: BusEvent) -> str:
+    def format_event(self, event: BusMessage) -> str:
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        prefix = f"[dim cyan][{timestamp}][/dim cyan] [bold yellow]{event.type}[/bold yellow]"
+        event_type = event.event_type.value
+        payload = event.data
+        prefix = f"[dim cyan][{timestamp}][/dim cyan] [bold yellow]{event_type}[/bold yellow]"
         
-        if event.type == "SCORING_COMPLETE":
-            return f"{prefix} Candidates scored: {len(event.payload.get('candidates', []))}"
-        elif event.type == "POLICY_VIOLATION":
-            return f"{prefix} [red]Policy rejected:[/red] {event.payload.get('reason', '')}"
-        elif event.type == "AGENT_DECISION":
-            return f"{prefix} Agent {event.payload.get('agent', '')}: {event.payload.get('reasoning', '')}"
-        elif event.type == "QUEUE_UPDATED":
-            return f"{prefix} Queue length: {event.payload.get('length', 0)}"
-        elif event.type == "EVENT_STATE_UPDATED":
-            return f"{prefix} State -> {event.payload.get('state', 'unknown')}"
-        elif event.type == "ERROR":
-            return f"{prefix} [bold red]ERROR: {event.payload.get('message', '')}[/bold red]"
+        if event.event_type == BusEvent.SCORING_COMPLETE:
+            return f"{prefix} Candidates scored: {len(payload.get('candidates', []))}"
+        elif event.event_type == BusEvent.POLICY_VIOLATION:
+            return f"{prefix} [red]Policy rejected:[/red] {payload.get('reason', '')}"
+        elif event.event_type == BusEvent.AGENT_DECISION:
+            return f"{prefix} Agent {payload.get('agent', '')}: {payload.get('reasoning', payload.get('reason', ''))}"
+        elif event.event_type == BusEvent.QUEUE_UPDATED:
+            return f"{prefix} Queue update: {payload.get('action', payload)}"
+        elif event.event_type == BusEvent.EVENT_STATE_UPDATED:
+            return f"{prefix} Decision epoch: {payload.get('state', {}).get('decision_epoch', 'unknown')}"
+        elif event.event_type == BusEvent.ERROR:
+            return f"{prefix} [bold red]ERROR: {payload.get('message', '')}[/bold red]"
         else:
             # Generic fallback
-            payload_str = str(event.payload)[:100] + ("..." if len(str(event.payload)) > 100 else "")
+            payload_str = str(payload)[:100] + ("..." if len(str(payload)) > 100 else "")
             return f"{prefix} {payload_str}"
 
     def run(self) -> None:
@@ -55,9 +57,8 @@ class DebugConsole:
                     event = self.event_queue.get(timeout=1.0)
                     self.console.print(self.format_event(event))
                     self.event_queue.task_done()
-                except Exception as e:
-                    if type(e).__name__ != 'Empty':
-                        pass
+                except Empty:
+                    continue
         except KeyboardInterrupt:
             self.console.print("[bold red]Shutting down Debug Console...[/bold red]")
             self.running = False
