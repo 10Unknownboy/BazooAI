@@ -179,37 +179,59 @@ if not backend.startswith("local:") or "raw_output" in parsed:
     raise RuntimeError(f"Local-model smoke test failed: backend={backend}; parsed={parsed}")
 
 
-# --- Setup ngrok ---
-from pyngrok import ngrok, conf
+# Start FastAPI before opening the ngrok tunnel. The tunnel must never point
+# at port 8000 until the upstream health check succeeds.
+import asyncio
 
-ngrok.set_auth_token(NGROK_AUTH_TOKEN)
-tunnel = ngrok.connect("127.0.0.1:8000", "http")
-public_url = tunnel.public_url
-print("=" * 60)
-print(f"🌐 ngrok tunnel active: {public_url}")
-print(f"   Set AI_MODEL_URL={public_url} in your local .env")
-print(f"   Health check: {public_url}/health")
-print("=" * 60)
-
-# --- Start FastAPI server ---
-# This cell blocks and runs the server. The server will keep running
-# until you stop this cell or the Colab runtime disconnects.
-
+import httpx
 import uvicorn
 from app.api.model_server import app
 
-print(f"🚀 Starting AI DJ Model Server...")
-print(f"   Backend: {router.active_backend.value}")
-print(f"   Listening on: 0.0.0.0:8000")
-print(f"   Public URL: {public_url}")
-print()
-print("Press the ⏹️ button to stop the server.")
-print("-" * 60)
-
-# Using uvicorn.Server directly to avoid nest_asyncio loop_factory errors in Colab
 config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
 server = uvicorn.Server(config)
-await server.serve()
+server_task = asyncio.create_task(server.serve())
+async with httpx.AsyncClient(timeout=10) as client:
+    for _ in range(180):
+        if server_task.done():
+            await server_task
+        try:
+            response = await client.get("http://127.0.0.1:8000/health")
+            response.raise_for_status()
+            health = response.json()
+            if health.get("active_backend") != "local":
+                server.should_exit = True
+                await server_task
+                raise RuntimeError(f"Local model server started unhealthy: {health}")
+            break
+        except httpx.HTTPError:
+            await asyncio.sleep(1)
+    else:
+        server.should_exit = True
+        await server_task
+        raise RuntimeError("FastAPI did not become healthy on port 8000")
+
+raw_text, backend, inference_error = await router.generate(
+    'Return ONLY a JSON object with keys "ready" (boolean) and "model" (string). Set ready to true.',
+    max_tokens=80,
+)
+parsed = parse_llm_json(raw_text)
+if not backend.startswith("local:") or not parsed.get("ready"):
+    server.should_exit = True
+    await server_task
+    raise RuntimeError(
+        f"Local inference smoke test failed: backend={backend}, error={inference_error}"
+    )
+
+from pyngrok import ngrok
+
+ngrok.set_auth_token(NGROK_AUTH_TOKEN)
+tunnel = ngrok.connect(addr="127.0.0.1:8000", proto="http")
+public_url = tunnel.public_url
+print(f"ngrok tunnel active: {public_url}")
+print(f"Set AI_MODEL_URL={public_url} in your local .env")
+print(f"Health check: {public_url}/health")
+print("FastAPI is healthy with the local model; press stop to end the server.")
+await server_task
 
 import httpx, json
 

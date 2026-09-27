@@ -72,6 +72,18 @@ The Streamlit **API Console** also has a **Run live AI decision check** button. 
 candidates are restricted to existing local files, at least 30 seconds long by default, and
 exclude configurable sound-effect terms in `config/scoring_weights.yaml`.
 
+## Metadata and Live Diagnostics
+- In the Streamlit sidebar, select **Fetch MusicBrainz metadata + LRCLIB lyrics** to enrich
+  the indexed local library in the background. MusicBrainz requests use
+  `MUSICBRAINZ_USER_AGENT` and are rate-limited; metadata and lyrics responses/analysis are
+  cached in SQLite. The enrichment job does not block playback.
+- The dashboard and five-song queue refresh automatically while the page is open.
+- The Colab model server exposes `GET /log?limit=100` for a bounded, redacted tail of recent
+  model-server logs (`limit` is restricted to 1–500).
+- Manual vibe and energy settings stay in effect until the next event starts. Genre, artist,
+  and language preferences contribute to deterministic candidate generation and scoring;
+  only reconsiderable queue slots are replaced after a manual change.
+
 ## Commands
 * `play` - Start playback
 * `pause` - Pause playback

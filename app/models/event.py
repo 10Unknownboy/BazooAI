@@ -88,6 +88,11 @@ class EventState(DJBaseModel):
     # Current musical state
     current_vibe: VibePreset = VibePreset.CHILL
     vibe_vector: VibeVector = Field(default_factory=VibeVector)
+    agent_preferred_genres: list[str] = Field(default_factory=list)
+    agent_avoided_genres: list[str] = Field(default_factory=list)
+    agent_preferred_languages: list[str] = Field(default_factory=list)
+    agent_preferred_artists: list[str] = Field(default_factory=list)
+    agent_avoided_artists: list[str] = Field(default_factory=list)
     target_energy: float = Field(default=0.5, ge=0.0, le=1.0)
     current_energy: float = Field(default=0.5, ge=0.0, le=1.0)
 

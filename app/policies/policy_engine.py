@@ -30,10 +30,20 @@ class PolicyEngine:
         explicit_allowed = event_state.event_config.explicit_allowed and content.get(
             "explicit_allowed", True
         )
-        if song.explicit and not explicit_allowed:
+        lyrics_explicit = bool(
+            song.lyrics_features
+            and (
+                song.lyrics_features.explicitness >= 0.5
+                or not song.lyrics_features.family_friendly
+            )
+        )
+        if (song.explicit or lyrics_explicit) and not explicit_allowed:
             violations.append("Explicit content is not allowed for this event.")
 
-        blocked_artists = {name.casefold() for name in artists.get("blocked", [])}
+        blocked_artists = {
+            name.casefold()
+            for name in artists.get("blocked", []) + event_state.event_config.avoid_artists
+        }
         song_artists = {name.casefold() for name in (song.artists or [])}
         song_artists.add(song.artist.casefold())
         if blocked_artists & song_artists:

@@ -16,9 +16,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.event.event_bus import BusEvent, get_event_bus
 from app.models.base import LockStatus
 from app.models.queue import QueueItem, QueueState
-from app.event.event_bus import get_event_bus, BusEvent
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +132,16 @@ class QueueManager:
             for item in self._state.items
             if item.can_be_changed()
         ]
+
+    def clear_reconsidering(self) -> int:
+        """Drop unlocked lookahead entries while preserving the locked queue head."""
+        retained = [item for item in self._state.items if not item.can_be_changed()]
+        removed = len(self._state.items) - len(retained)
+        if removed:
+            self._state.items = retained
+            self._refresh_positions()
+            self._publish(BusEvent.QUEUE_UPDATED, {"action": "reconsider", "removed": removed})
+        return removed
 
     def get_state(self) -> QueueState:
         """Get a copy of the current queue state."""

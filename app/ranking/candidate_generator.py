@@ -35,6 +35,48 @@ class CandidateGenerator:
             limit=max(self.initial_pool_size * 5, limit),
             exclude_ids=exclude_ids,
         )
+        preferred_genres = {
+            value.casefold()
+            for value in (
+                event_state.event_config.prefer_genres + event_state.agent_preferred_genres
+            )
+        }
+        preferred_artists = {
+            value.casefold()
+            for value in (
+                event_state.event_config.prefer_artists + event_state.agent_preferred_artists
+            )
+        }
+        allowed_languages = {
+            value.casefold()
+            for value in (
+                event_state.event_config.languages + event_state.agent_preferred_languages
+            )
+        }
+        available.sort(
+            key=lambda song: (
+                bool(
+                    preferred_artists
+                    & {artist.casefold() for artist in song.artists + [song.artist]}
+                ),
+                bool(
+                    preferred_genres
+                    & {
+                        genre.casefold()
+                        for genre in song.genres + ([song.genre] if song.genre else [])
+                    }
+                ),
+                bool(
+                    allowed_languages
+                    & {
+                        language.casefold()
+                        for language in song.languages + ([song.language] if song.language else [])
+                    }
+                ),
+                song.popularity,
+            ),
+            reverse=True,
+        )
         return available[: min(limit, self.initial_pool_size)]
 
     def get_playable_library_tracks(self, limit: int = 50) -> list[Song]:
@@ -104,8 +146,7 @@ class CandidateGenerator:
             and song.duration is not None
             and song.duration >= self.minimum_track_duration
             and not any(
-                term.casefold()
-                in f"{song.title} {Path(song.file_path).stem}".casefold()
+                term.casefold() in f"{song.title} {Path(song.file_path).stem}".casefold()
                 for term in self.excluded_title_terms
             )
         )

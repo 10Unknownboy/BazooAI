@@ -18,15 +18,17 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import traceback
+from collections import deque
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -94,6 +96,47 @@ except ImportError:
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(name)s | %(message)s")
 logger = logging.getLogger("ai_dj.model_server")
+
+
+class RecentLogHandler(logging.Handler):
+    """Bounded, thread-safe recent model-server logs for the Colab console."""
+
+    def __init__(self, capacity: int = 500):
+        super().__init__()
+        self._records: deque[dict[str, str]] = deque(maxlen=capacity)
+        self._lock = threading.Lock()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = self.format(record)
+        message = re.sub(
+            r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+",
+            r"\1[REDACTED]",
+            message,
+        )
+        message = re.sub(
+            r"(?i)((?:api[_-]?key|token|secret|password)=)[^&\s]+",
+            r"\1[REDACTED]",
+            message,
+        )
+        item = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(record.created)),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": message[:2000],
+        }
+        with self._lock:
+            self._records.append(item)
+
+    def recent(self, limit: int) -> list[dict[str, str]]:
+        with self._lock:
+            return list(self._records)[-limit:]
+
+
+recent_log_handler = RecentLogHandler()
+recent_log_handler.setFormatter(
+    logging.Formatter("%(levelname)s %(name)s: %(message)s")
+)
+logging.getLogger().addHandler(recent_log_handler)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -700,6 +743,12 @@ async def health_check():
             "errors": router.error_count,
         },
     )
+
+
+@app.get("/log")
+async def recent_model_logs(limit: int = Query(default=100, ge=1, le=500)):
+    """Return a bounded tail of recent model-server logs for live diagnostics."""
+    return {"logs": recent_log_handler.recent(limit)}
 
 
 @app.post("/v1/backend/switch", response_model=BackendSwitchResponse)

@@ -209,6 +209,7 @@ class ScoreComponents(DJBaseModel):
     vibe_match: float = 0.0
     energy_match: float = 0.0
     genre_match: float = 0.0
+    artist_match: float = 0.0
     language_match: float = 0.0
     transition_score: float = 0.0
     popularity: float = 0.0
