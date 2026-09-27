@@ -18,16 +18,22 @@ def start_orchestrator(dry_run: bool = False, simulate: bool = False) -> None:
         time.sleep(1)
 
 @click.command()
-@click.option('--dashboard', is_flag=True, help='Run dashboard only')
+@click.option('--dashboard', is_flag=True, help='Run terminal dashboard only')
+@click.option('--streamlit', 'run_streamlit', is_flag=True, help='Run Streamlit UI dashboard')
 @click.option('--debug', is_flag=True, help='Run debug console only')
 @click.option('--api', is_flag=True, help='Run API console only')
-@click.option('--all', 'run_all', is_flag=True, help='Launch all three in separate windows')
+@click.option('--all', 'run_all', is_flag=True, help='Launch all consoles in separate windows')
 @click.option('--dry-run', is_flag=True, help='Dry-run mode')
 @click.option('--event', type=click.Path(exists=True), help='Load event from config file')
 @click.option('--simulate', is_flag=True, help='Simulation mode')
-def main(dashboard, debug, api, run_all, dry_run, event, simulate):
+def main(dashboard, run_streamlit, debug, api, run_all, dry_run, event, simulate):
     """AI DJ System Entry Point"""
     setup_logging()
+
+    if run_streamlit:
+        print("Launching Streamlit Dashboard...")
+        subprocess.run([sys.executable, "-m", "streamlit", "run", "app/ui/streamlit_app.py"])
+        return
 
     if run_all:
         print("Launching all consoles in separate windows...")

@@ -23,7 +23,7 @@ class CandidateGenerator:
             exclude = set(exclude_ids) if exclude_ids else set()
             
             # Fetch candidates from the database (simulated with repo)
-            all_songs = self.song_repo.get_all_songs(limit=self.initial_pool_size)
+            all_songs = self.song_repo.get_all(limit=self.initial_pool_size)
             
             candidates = []
             for song in all_songs:

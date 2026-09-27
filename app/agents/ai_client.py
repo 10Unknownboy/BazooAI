@@ -40,26 +40,24 @@ class AIModelClient:
 
     async def generate(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> AIResponse:
         """Generate a generic response based on a prompt."""
+        from app.models.base import AIMessageType
         request = AIRequest(
-            agent_id="generic",
-            task_type="generation",
-            context=context or {},
-            prompt=prompt
+            message_type=AIMessageType.DJ_DECISION,
+            request_data={"prompt": prompt, "context": context or {}}
         )
         return await self._send_request(f"{self.base_url}/v1/ai/decide", request)
 
     async def classify(self, data: Dict[str, Any], schema: Optional[Dict[str, Any]] = None) -> AIResponse:
         """Classify data using the AI model."""
+        from app.models.base import AIMessageType
         request = AIRequest(
-            agent_id="classifier",
-            task_type="classification",
-            context={"data": data, "schema": schema},
-            prompt="Classify the following data."
+            message_type=AIMessageType.DJ_DECISION,
+            request_data={"data": data, "schema": schema, "prompt": "Classify the following data."}
         )
         return await self._send_request(f"{self.base_url}/v1/ai/decide", request)
 
     async def _send_request(self, url: str, request: AIRequest) -> AIResponse:
-        self.event_bus.publish(BusEvent.AI_REQUEST_SENT, source="ai_client", data={"request_id": request.request_id, "task": request.task_type})
+        self.event_bus.publish(BusEvent.AI_REQUEST_SENT, source="ai_client", data={"request_id": request.request_id, "task": request.message_type.value})
         
         for attempt in range(self.max_retries):
             try:
@@ -92,7 +90,7 @@ class AIModelClient:
         self.event_bus.publish(BusEvent.AI_UNAVAILABLE, source="ai_client", data={"request_id": request.request_id})
         return AIResponse(
             request_id=request.request_id,
+            message_type=request.message_type,
             success=False,
-            error_message="AI model server unavailable after retries",
-            content=None
+            error="AI model server unavailable after retries"
         )

@@ -34,8 +34,11 @@ class LearningAgent:
 
     def apply_immediate_learning(self, feedback: SongFeedback, event_state: EventState, reward: float) -> None:
         """Apply learning immediately to the current event context."""
-        # e.g., if negative, lower the score of similar songs for this event
-        pass
+        event_state.crowd_feedback_history.append({
+            "song_id": feedback.song_id,
+            "reward": reward,
+            "timestamp": feedback.timestamp.isoformat()
+        })
 
     def store_learning_record(self, state: EventState, action: str, reward: float, next_state: EventState, context: Dict[str, Any]) -> None:
         """Store the learning record for long-term preferences."""
@@ -44,5 +47,9 @@ class LearningAgent:
 
     def get_learned_adjustment(self, song: Song, event_state: EventState) -> float:
         """Get the score adjustment based on learned preferences for this song in this context."""
-        # Returns a float to be added to the song's score
-        return 0.0
+        adjustment = 0.0
+        for fb in event_state.crowd_feedback_history:
+            if fb.get("song_id") == song.id:
+                # Add scaled reward to the song's score
+                adjustment += fb.get("reward", 0.0) * 10.0
+        return adjustment

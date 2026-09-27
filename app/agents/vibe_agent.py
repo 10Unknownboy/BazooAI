@@ -33,13 +33,15 @@ class VibeAgent:
     async def evaluate_vibe(self, event_state: EventState) -> VibeRecommendation:
         """Evaluate current event state and recommend a vibe direction."""
         
+        from app.models.base import AIMessageType
         # Try to use AI reasoning
         try:
             request = AIRequest(
-                agent_id="vibe_agent",
-                task_type="vibe_recommendation",
-                context={"event_state": event_state.model_dump(mode="json")},
-                prompt="Based on the event state, recommend a vibe direction."
+                message_type=AIMessageType.VIBE_UPDATE,
+                request_data={
+                    "event_state": event_state.model_dump(mode="json"),
+                    "prompt": "Based on the event state, recommend a vibe direction."
+                }
             )
             response = await self.ai_client.decide(request)
             
@@ -57,8 +59,8 @@ class VibeAgent:
             
         # Fallback to deterministic config
         return VibeRecommendation(
-            recommended_vibe=event_state.config.base_vibe,
-            preferred_genres=event_state.config.allowed_genres,
+            recommended_vibe=event_state.event_config.starting_vibe,
+            preferred_genres=event_state.event_config.prefer_genres,
             preferred_languages=[],
             reason="Fallback to event config base vibe",
             confidence=1.0

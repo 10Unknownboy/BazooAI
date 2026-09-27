@@ -17,26 +17,41 @@ class RequestAgent:
         self.ai_client = ai_client or AIModelClient()
         self.event_bus = get_event_bus()
         self.deferred_requests: List[SongRequest] = []
+        self.requests: Dict[str, SongRequest] = {}
 
     async def evaluate_request(self, request: SongRequest, event_state: EventState) -> RequestDecision:
         """Evaluate a song request and decide how to handle it."""
+        self.requests[request.request_id] = request
         self._update_status(request, RequestStatus.VALIDATING)
         
         # 1. Deterministic Policy Check (e.g. is it blacklisted?)
         self._update_status(request, RequestStatus.POLICY_CHECK)
         # Placeholder policy check
         
+        # Match song if not matched
+        if not request.matched_song_id:
+            from app.database.repositories import get_repository
+            song_repo = get_repository("song")
+            # Simple simulation: get all and find substring match
+            all_songs = song_repo.get_all(limit=100)
+            for s in all_songs:
+                if request.requested_song_query.lower() in s.title.lower() or request.requested_song_query.lower() in s.artist.lower():
+                    request.matched_song_id = s.id
+                    break
+            if not request.matched_song_id and all_songs:
+                request.matched_song_id = all_songs[0].id # fallback match
+        
         self._update_status(request, RequestStatus.ANALYZING)
         
         try:
+            from app.models.base import AIMessageType
             ai_req = AIRequest(
-                agent_id="request_agent",
-                task_type="request_evaluation",
-                context={
+                message_type=AIMessageType.REQUEST_DECISION,
+                request_data={
                     "event_state": event_state.model_dump(mode="json"),
-                    "request": request.model_dump(mode="json")
-                },
-                prompt="Evaluate if this requested song is appropriate for the current event vibe. Decide: ACCEPT_NOW, QUEUE, DEFER, BRIDGE, REJECT."
+                    "request": request.model_dump(mode="json"),
+                    "prompt": "Evaluate if this requested song is appropriate for the current event vibe. Decide: ACCEPT_NOW, QUEUE, DEFER, BRIDGE, REJECT."
+                }
             )
             response = await self.ai_client.decide(ai_req)
             
@@ -45,12 +60,13 @@ class RequestAgent:
                 reason = response.content.get("reason", "AI decided")
                 
                 decision = RequestDecision(
-                    request_id=request.id,
+                    request_id=request.request_id,
                     status=self._map_decision_to_status(decision_str),
-                    reason=reason
+                    reason=reason,
+                    decision=decision_str.upper() if decision_str.upper() in ["ACCEPT_NOW", "QUEUE", "DEFER", "BRIDGE", "REJECT"] else "QUEUE"
                 )
                 self._update_status(request, decision.status, reason)
-                self.event_bus.publish(BusEvent.REQUEST_DECIDED, source="request_agent", data={"decision": decision.model_dump(mode="json")})
+                self.event_bus.publish(BusEvent.REQUEST_DECIDED, source="request_agent", data={"decision": decision.model_dump(mode="json"), "request": request.model_dump(mode="json")})
                 
                 if decision.status == RequestStatus.DEFERRED:
                     self.deferred_requests.append(request)
@@ -62,12 +78,13 @@ class RequestAgent:
             
         # Fallback decision
         decision = RequestDecision(
-            request_id=request.id,
+            request_id=request.request_id,
             status=RequestStatus.QUEUED,
-            reason="Fallback to accept and queue"
+            reason="Fallback to accept and queue",
+            decision="QUEUE"
         )
         self._update_status(request, decision.status, decision.reason)
-        self.event_bus.publish(BusEvent.REQUEST_DECIDED, source="request_agent", data={"decision": decision.model_dump(mode="json")})
+        self.event_bus.publish(BusEvent.REQUEST_DECIDED, source="request_agent", data={"decision": decision.model_dump(mode="json"), "request": request.model_dump(mode="json")})
         return decision
 
     def _map_decision_to_status(self, decision_str: str) -> RequestStatus:
