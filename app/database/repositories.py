@@ -5,11 +5,13 @@ No raw SQL in application code. All queries go through repositories.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
+from app.audio.constants import AUDIO_ANALYZER_VERSION
 from app.database.engine import (
     AgentDecisionTable,
     APICacheTable,
@@ -36,6 +38,36 @@ from app.models.song import AudioFeatures, LyricsFeatures, Song
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _audio_features_from_row(row: AudioFeaturesTable) -> AudioFeatures:
+    return AudioFeatures(
+        song_id=row.song_id,
+        bpm=row.bpm,
+        tempo=row.tempo,
+        key=row.key,
+        loudness=row.loudness,
+        energy=row.energy,
+        danceability=row.danceability,
+        valence=row.valence,
+        acousticness=row.acousticness,
+        instrumentalness=row.instrumentalness,
+        speechiness=row.speechiness,
+        spectral_centroid=row.spectral_centroid,
+        spectral_bandwidth=row.spectral_bandwidth,
+        spectral_rolloff=row.spectral_rolloff,
+        zero_crossing_rate=row.zero_crossing_rate,
+        mfcc_mean=row.mfcc_mean,
+        chroma_mean=row.chroma_mean,
+        onset_rate=row.onset_rate,
+        duration=row.duration,
+        file_hash=row.file_hash,
+        analyzer_version=row.analyzer_version,
+        analysis_version=row.analysis_version or 1,
+        analysis_status=row.analysis_status or "PENDING",
+        analyzed_at=row.analyzed_at,
+        audio_embedding=row.audio_embedding,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +126,7 @@ class SongRepository:
         ).scalar_one_or_none()
         if row is None:
             return None
-        return self._row_to_model(row)
+        return self._rows_to_models([row])[0]
 
     def get_by_title_artist(self, title: str, artist: str) -> Song | None:
         row = self.session.execute(
@@ -107,7 +139,7 @@ class SongRepository:
         ).scalar_one_or_none()
         if row is None:
             return None
-        return self._row_to_model(row)
+        return self._rows_to_models([row])[0]
 
     def search(self, query: str, limit: int = 50) -> list[Song]:
         q = query.lower()
@@ -123,11 +155,11 @@ class SongRepository:
             .scalars()
             .all()
         )
-        return [self._row_to_model(r) for r in rows]
+        return self._rows_to_models(rows)
 
     def get_all(self, limit: int = 1000) -> list[Song]:
         rows = self.session.execute(select(SongTable).limit(limit)).scalars().all()
-        return [self._row_to_model(r) for r in rows]
+        return self._rows_to_models(rows)
 
     def get_by_language(self, language: str, limit: int = 200) -> list[Song]:
         rows = (
@@ -139,7 +171,7 @@ class SongRepository:
             .scalars()
             .all()
         )
-        return [self._row_to_model(r) for r in rows]
+        return self._rows_to_models(rows)
 
     def get_by_genre(self, genre: str, limit: int = 200) -> list[Song]:
         rows = (
@@ -149,7 +181,7 @@ class SongRepository:
             .scalars()
             .all()
         )
-        return [self._row_to_model(r) for r in rows]
+        return self._rows_to_models(rows)
 
     def get_candidates(
         self,
@@ -157,6 +189,9 @@ class SongRepository:
         genres: list[str] | None = None,
         exclude_ids: list[str] | None = None,
         explicit_allowed: bool = True,
+        source_provider: str | None = None,
+        min_duration: float | None = None,
+        excluded_title_terms: list[str] | None = None,
         limit: int = 200,
     ) -> list[Song]:
         """Get candidate songs with basic filters for candidate generation."""
@@ -169,11 +204,24 @@ class SongRepository:
             conditions.append(SongTable.explicit == False)
         if exclude_ids:
             conditions.append(SongTable.song_id.notin_(exclude_ids))
+        if source_provider:
+            conditions.append(SongTable.source_provider == source_provider)
+        if min_duration is not None:
+            conditions.append(SongTable.duration >= min_duration)
+        if excluded_title_terms:
+            conditions.extend(
+                ~or_(
+                    func.lower(SongTable.title).contains(term.lower()),
+                    func.lower(func.coalesce(SongTable.file_path, "")).contains(term.lower()),
+                )
+                for term in excluded_title_terms
+                if term.strip()
+            )
         if conditions:
             stmt = stmt.where(and_(*conditions))
         stmt = stmt.order_by(SongTable.popularity.desc()).limit(limit)
         rows = self.session.execute(stmt).scalars().all()
-        return [self._row_to_model(r) for r in rows]
+        return self._rows_to_models(rows)
 
     def save(self, song: Song) -> None:
         existing = self.session.execute(
@@ -192,6 +240,43 @@ class SongRepository:
 
     def count(self) -> int:
         return self.session.execute(select(func.count(SongTable.song_id))).scalar() or 0
+
+    def _rows_to_models(self, rows: list[SongTable]) -> list[Song]:
+        songs = [self._row_to_model(row) for row in rows]
+        if not songs:
+            return songs
+        feature_rows = (
+            self.session.execute(
+                select(AudioFeaturesTable).where(
+                    AudioFeaturesTable.song_id.in_([song.song_id for song in songs])
+                )
+            )
+            .scalars()
+            .all()
+        )
+        features_by_song = {
+            row.song_id: _audio_features_from_row(row) for row in feature_rows
+        }
+        for song in songs:
+            features = features_by_song.get(song.song_id)
+            if (
+                features
+                and (
+                    features.analysis_status != "COMPLETE"
+                    or features.analyzer_version != AUDIO_ANALYZER_VERSION
+                    or (
+                        song.file_hash
+                        and features.file_hash
+                        and song.file_hash != features.file_hash
+                    )
+                )
+            ):
+                song.audio_analysis_status = "PENDING"
+                features = None
+            song.audio_features = features
+            if song.audio_features:
+                song.audio_analysis_status = song.audio_features.analysis_status
+        return songs
 
     def _row_to_model(self, row: SongTable) -> Song:
         return Song(
@@ -254,33 +339,40 @@ class AudioFeaturesRepository:
         ).scalar_one_or_none()
         if row is None:
             return None
-        return AudioFeatures(
-            song_id=row.song_id,
-            bpm=row.bpm,
-            tempo=row.tempo,
-            key=row.key,
-            loudness=row.loudness,
-            energy=row.energy,
-            danceability=row.danceability,
-            valence=row.valence,
-            acousticness=row.acousticness,
-            instrumentalness=row.instrumentalness,
-            speechiness=row.speechiness,
-            spectral_centroid=row.spectral_centroid,
-            spectral_bandwidth=row.spectral_bandwidth,
-            spectral_rolloff=row.spectral_rolloff,
-            zero_crossing_rate=row.zero_crossing_rate,
-            mfcc_mean=row.mfcc_mean,
-            chroma_mean=row.chroma_mean,
-            onset_rate=row.onset_rate,
-            duration=row.duration,
-            file_hash=row.file_hash,
-            analyzer_version=row.analyzer_version,
-            analysis_version=row.analysis_version or 1,
-            analysis_status=row.analysis_status or "PENDING",
-            analyzed_at=row.analyzed_at,
-            audio_embedding=row.audio_embedding,
+        return _audio_features_from_row(row)
+
+    def get_by_song_ids(self, song_ids: list[str]) -> dict[str, AudioFeatures]:
+        if not song_ids:
+            return {}
+        rows = (
+            self.session.execute(
+                select(AudioFeaturesTable).where(AudioFeaturesTable.song_id.in_(song_ids))
+            )
+            .scalars()
+            .all()
         )
+        return {row.song_id: _audio_features_from_row(row) for row in rows}
+
+    def get_for_file_paths(self, file_paths: list[str]) -> dict[str, list[AudioFeatures]]:
+        if not file_paths:
+            return {}
+        normalized_paths = {
+            os.path.normcase(os.path.abspath(path))
+            for path in file_paths
+        }
+        rows = self.session.execute(
+            select(SongTable.file_path, AudioFeaturesTable)
+            .join(
+                AudioFeaturesTable,
+                AudioFeaturesTable.song_id == SongTable.song_id,
+            )
+            .where(func.lower(SongTable.file_path).in_([path.lower() for path in normalized_paths]))
+        ).all()
+        features_by_path: dict[str, list[AudioFeatures]] = {}
+        for file_path, row in rows:
+            key = os.path.normcase(os.path.abspath(file_path))
+            features_by_path.setdefault(key, []).append(_audio_features_from_row(row))
+        return features_by_path
 
     def is_analyzed(self, song_id: str, analyzer_version: str | None = None) -> bool:
         row = self.session.execute(

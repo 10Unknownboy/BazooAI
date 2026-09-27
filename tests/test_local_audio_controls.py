@@ -78,6 +78,24 @@ def test_provider_refuses_to_claim_playback_without_audio_output(monkeypatch, tm
     assert provider.current_song() is None
 
 
+def test_missing_queue_track_reports_actionable_playback_error(tmp_path):
+    queue = QueueManager()
+    queue.add_song(
+        "obsolete-local-id",
+        score=55.4,
+        song_title="All CS radio commands",
+        song_artist="Unknown Artist",
+    )
+    provider = local_file_provider.LocalFileProvider(str(tmp_path))
+    controller = PlaybackController(queue, provider)
+    try:
+        assert not controller.play()
+        assert "not indexed" in controller.last_error
+        assert "obsolete-local-id" in controller.last_error
+    finally:
+        controller.close()
+
+
 def test_streamlit_controls_drive_real_provider_operations(monkeypatch, tmp_path):
     mixer = install_fake_audio(monkeypatch)
     for name in ("first.mp3", "second.mp3"):

@@ -46,9 +46,9 @@ class DJOrchestrator:
         # Instantiate agents and engines
         self.vibe_agent = VibeAgent()
         self.song_selection_agent = SongSelectionAgent()
-        self.request_agent = RequestAgent()
-        self.learning_agent = LearningAgent()
         self.candidate_generator = CandidateGenerator()
+        self.request_agent = RequestAgent(candidate_generator=self.candidate_generator)
+        self.learning_agent = LearningAgent()
         self.scoring_engine = ScoringEngine()
         self.penalty_engine = PenaltyEngine()
         self.transition_engine = TransitionEngine()
@@ -199,7 +199,7 @@ class DJOrchestrator:
                 requested_song_ids[request.matched_song_id] = request_id
                 if not any(song.song_id == request.matched_song_id for song in candidates):
                     song = self.candidate_generator.song_repo.get(request.matched_song_id)
-                    if song:
+                    if song and self.candidate_generator.is_playable_local_track(song):
                         candidates.append(song)
 
         previous_song = (

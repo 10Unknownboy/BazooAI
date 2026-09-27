@@ -36,6 +36,7 @@ class LocalFileProvider(MusicProvider):
         self._playing = False
         self._current_song: dict | None = None
         self._paused = False
+        self.last_error: str | None = None
 
         if PYGAME_AVAILABLE:
             try:
@@ -121,19 +122,27 @@ class LocalFileProvider(MusicProvider):
     def play(self, song_id: str) -> bool:
         song = self.get_song(song_id)
         if not song:
+            self.last_error = (
+                f"Track {song_id} is not indexed by the local music provider. "
+                "Refresh the library and rebuild the queue."
+            )
+            logger.error(self.last_error)
             return False
 
         if not PYGAME_AVAILABLE:
-            logger.error("Cannot play %s: no audio output device is available", song["title"])
+            self.last_error = "No audio output device is available on the machine running the DJ."
+            logger.error("Cannot play %s: %s", song["title"], self.last_error)
             return False
         try:
             pygame.mixer.music.load(song["path"])
             pygame.mixer.music.play()
-        except pygame.error, OSError:
+        except (pygame.error, OSError) as e:
+            self.last_error = f"Audio playback failed for {song['path']}: {e}"
             logger.exception("Failed to play local track %s", song["path"])
             self._playing = False
             self._current_song = None
             return False
+        self.last_error = None
         self._playing = True
         self._paused = False
         self._current_song = song

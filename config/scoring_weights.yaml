@@ -52,6 +52,15 @@ normalization:
 # --- Candidate generation ---
 candidates:
   initial_pool_size: 200       # max songs from DB for candidate generation
+  minimum_track_duration: 30   # exclude short samples and sound effects
+  excluded_title_terms:
+    - sound effect
+    - soundboard
+    - radio commands
+    - counter-strike
+    - counter strike
+    - cs-radio
+    - csgo
   policy_filtered_size: 100    # after policy filter
   scoring_pool_size: 50        # sent to full scoring
   ai_review_top_n: 10         # top N sent for AI review

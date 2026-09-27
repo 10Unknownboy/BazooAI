@@ -3,24 +3,22 @@ AI DJ Model Server — Dual-backend LLM inference.
 
 Runs as a FastAPI app (intended for Google Colab behind ngrok).
 
-Backends (tried in order):
+Backends:
   1. LOCAL — HuggingFace Transformers model loaded on the Colab GPU.
-  2. EXTERNAL — OpenRouter (or any OpenAI-compatible API) as a fallback.
+  2. EXTERNAL — OpenRouter (or any OpenAI-compatible API) in auto/external mode.
 
-The backend is selected at startup. If the local model fails to load
-(e.g. OOM on a free T4), the server automatically falls back to the
-external API. The operator can also force a backend via the
-LLM_BACKEND env var ("local", "external", "auto").
+Set LLM_BACKEND=local to fail closed without using an external provider.
+In auto mode, the server may fall back to the external API if local inference fails.
 """
 
 from __future__ import annotations
 
 import gc
 import json
+import logging
 import os
 import re
 import time
-import logging
 import traceback
 from enum import Enum
 from pathlib import Path
@@ -155,14 +153,14 @@ class LocalModelBackend:
         On OOM or any failure, sets self.load_error and returns False.
         """
         model_name = model_name or os.getenv(
-            "HF_MODEL_NAME", "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+            "HF_MODEL_NAME", "Qwen/Qwen2.5-1.5B-Instruct"
         )
         self.model_name = model_name
         logger.info(f"[LOCAL] Loading model: {model_name}  (dtype={dtype})")
 
         try:
             import torch
-            from transformers import AutoTokenizer, AutoModelForCausalLM
+            from transformers import AutoModelForCausalLM, AutoTokenizer
 
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
             logger.info(f"[LOCAL] Device: {self.device}")
@@ -327,14 +325,14 @@ def _backend_error_message(error: Exception) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 class InferenceRouter:
     """
-    Tries local model first; on failure, falls back to external API.
-    If both fail, returns a structured error.
+    Routes inference to the selected backend and enforces local-only mode when requested.
     """
 
     def __init__(self):
         self.local = LocalModelBackend()
         self.external = ExternalAPIBackend()
         self.active_backend: LLMBackend = LLMBackend.MOCK
+        self.local_only = False
         self.request_count: int = 0
         self.local_count: int = 0
         self.external_count: int = 0
@@ -348,6 +346,7 @@ class InferenceRouter:
         force_backend: "auto" | "local" | "external"
         """
         force = force_backend.lower()
+        self.local_only = force == "local"
 
         if force == "external":
             if self.external.available:
@@ -360,6 +359,12 @@ class InferenceRouter:
 
         # Try local first (unless forced external)
         if force in ("auto", "local"):
+            requested_model = local_kwargs.get("model_name") or os.getenv(
+                "HF_MODEL_NAME", "Qwen/Qwen2.5-1.5B-Instruct"
+            )
+            if self.local.loaded and self.local.model_name == requested_model:
+                self.active_backend = LLMBackend.LOCAL
+                return self.active_backend
             if self.local.load(**local_kwargs):
                 self.active_backend = LLMBackend.LOCAL
                 logger.info("[ROUTER] Using LOCAL backend")
@@ -385,8 +390,8 @@ class InferenceRouter:
     # ------------------------------------------------------------------
     async def generate(self, prompt: str, max_tokens: int = 1024) -> tuple[str, str, str | None]:
         """
-        Generate a response. Returns (text, backend_used).
-        Falls back from local → external → mock on each request.
+        Generate a response as (text, backend_used, error).
+        Auto mode falls back from local to external; forced-local mode never does.
         """
         self.request_count += 1
 
@@ -403,7 +408,12 @@ class InferenceRouter:
             except Exception as e:
                 logger.error(f"[ROUTER] Local inference failed: {e}")
                 errors.append(f"Local model failed: {_backend_error_message(e)}")
-                # Don't permanently switch — try external for this request
+                # Auto mode may try the external backend for this request.
+
+        if self.local_only:
+            self.error_count += 1
+            error = "; ".join(errors) or self.local.load_error or "Local model is not loaded"
+            return "", "mock", error
 
         # 2. Try external
         if self.external.available:
@@ -634,11 +644,17 @@ app = FastAPI(
 @app.on_event("startup")
 async def initialize_backend() -> None:
     """Initialize the configured backend when the API process starts."""
-    router.initialize(
-        force_backend=os.getenv("LLM_BACKEND", "auto"),
-        model_name=os.getenv("HF_MODEL_NAME", "TinyLlama/TinyLlama-1.1B-Chat-v1.0"),
+    configured_backend = os.getenv("LLM_BACKEND", "auto").lower()
+    active_backend = router.initialize(
+        force_backend=configured_backend,
+        model_name=os.getenv("HF_MODEL_NAME", "Qwen/Qwen2.5-1.5B-Instruct"),
         dtype=os.getenv("HF_DTYPE", "float16"),
     )
+    if configured_backend == "local" and active_backend != LLMBackend.LOCAL:
+        raise RuntimeError(
+            "LLM_BACKEND=local was required, but the local model failed to initialize: "
+            f"{router.local.load_error or 'unknown loading error'}"
+        )
 
 
 class HealthResponse(BaseModel):
