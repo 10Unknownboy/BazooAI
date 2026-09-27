@@ -1,17 +1,24 @@
 from __future__ import annotations
+
 import logging
 import time
-from threading import Timer, Lock
-from typing import Callable, Optional
+from collections.abc import Callable
+from threading import Lock, Timer
 
 from app.providers.base import MusicProvider
 
 logger = logging.getLogger(__name__)
 
+
 class MockMusicProvider(MusicProvider):
     """Mock music provider for development and testing (spec §52)."""
-    
-    def __init__(self, simulation_speed: float = 1.0, on_song_end: Optional[Callable] = None):
+
+    def __init__(
+        self,
+        simulation_speed: float = 1.0,
+        on_song_end: Callable | None = None,
+        songs: list[dict] | None = None,
+    ):
         self.simulation_speed = simulation_speed
         self.on_song_end = on_song_end
         self._current_song: dict | None = None
@@ -19,14 +26,26 @@ class MockMusicProvider(MusicProvider):
         self._start_time = 0.0
         self._pause_time = 0.0
         self._elapsed_before_pause = 0.0
-        self._timer: Optional[Timer] = None
+        self._timer: Timer | None = None
         self._lock = Lock()
-        
+
         # Local mock database for search
         self._mock_db = {
-            "mock_1": {"id": "mock_1", "title": "Mock Song 1", "artist": "Mock Artist", "duration": 210.0},
-            "mock_2": {"id": "mock_2", "title": "Mock Song 2", "artist": "Mock Artist", "duration": 180.0},
+            "mock_1": {
+                "id": "mock_1",
+                "title": "Mock Song 1",
+                "artist": "Mock Artist",
+                "duration": 210.0,
+            },
+            "mock_2": {
+                "id": "mock_2",
+                "title": "Mock Song 2",
+                "artist": "Mock Artist",
+                "duration": 180.0,
+            },
         }
+        if songs is not None:
+            self._mock_db = {song["id"]: song for song in songs}
 
     def _cancel_timer(self):
         if self._timer:
@@ -44,7 +63,11 @@ class MockMusicProvider(MusicProvider):
 
     def search(self, query: str, limit: int = 10) -> list[dict]:
         logger.info(f"Mock search query: {query}")
-        results = [song for song in self._mock_db.values() if query.lower() in song["title"].lower() or query.lower() in song["artist"].lower()]
+        results = [
+            song
+            for song in self._mock_db.values()
+            if query.lower() in song["title"].lower() or query.lower() in song["artist"].lower()
+        ]
         return results[:limit]
 
     def get_song(self, song_id: str) -> dict | None:
@@ -56,13 +79,13 @@ class MockMusicProvider(MusicProvider):
             if not song:
                 logger.error(f"Mock play failed: song {song_id} not found.")
                 return False
-                
+
             self._cancel_timer()
             self._current_song = song
             self._playing = True
             self._elapsed_before_pause = 0.0
             self._start_time = time.time()
-            
+
             real_duration = song.get("duration", 210.0) / self.simulation_speed
             self._timer = Timer(real_duration, self._handle_song_end)
             self._timer.start()
@@ -86,7 +109,7 @@ class MockMusicProvider(MusicProvider):
                 return False
             self._playing = True
             self._start_time = time.time()
-            
+
             duration = self._current_song.get("duration", 210.0)
             remaining_sim_time = (duration - self._elapsed_before_pause) / self.simulation_speed
             if remaining_sim_time > 0:

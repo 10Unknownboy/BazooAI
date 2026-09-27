@@ -40,6 +40,7 @@ class QueueItem(DJBaseModel):
     # Metadata cache for display (avoid repeated DB lookups)
     song_title: str | None = None
     song_artist: str | None = None
+    song_genre: str | None = None
     song_bpm: float | None = None
     song_energy: float | None = None
 

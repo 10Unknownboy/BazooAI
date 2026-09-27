@@ -42,6 +42,9 @@ python -m app --debug
 # API Console
 python -m app --api
 
+# Dashboard, Debug, and API views together in one shared runtime
+python -m app --all
+
 # Dry Run Simulation
 python -m app --dry-run
 
