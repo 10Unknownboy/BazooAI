@@ -12,10 +12,12 @@ For Windows users, use PowerShell:
 ```powershell
 git clone https://github.com/10Unknownboy/BazooAI
 cd ai_dj_system
-python -m venv .venv
+py -3.14 --version
+py -3.14 -m venv .venv
 .venv\Scripts\activate
 pip install -e .[all]
 ```
+Use Python 3.14.7 for the project-local `.venv`.
 
 ## Database Setup
 - SQLite is used for development (automatically created in `.data/db.sqlite`).
@@ -49,12 +51,26 @@ python -m app --simulate --speed 10
 2. Run it and expose via ngrok or localtunnel
 3. Update `.env` with the URL
 
+## Manual Live AI Check
+Configure `OPENROUTER_API_KEY` in `.env` and set `OPENROUTER_MODEL` to a model available to your account (the default is OpenRouter's free-model router, `openrouter/free`). Start the real model API in one terminal:
+```powershell
+python -m app --model-server
+```
+
+Then send one live decision request from another terminal:
+```powershell
+python scripts/model_probe.py --url http://127.0.0.1:8000
+```
+The probe fails if the server is using the deterministic mock backend, returns invalid candidate IDs, or cannot reach a real model. Free-provider capacity can be rate-limited; the model server reports that failure instead of presenting mock output as a successful AI decision.
+
 ## Commands
 * `play` - Start playback
 * `pause` - Pause playback
 * `skip` - Skip current song
 * `queue` - View queue
 * `request <song>` - Request a song
+* `vibe <preset>` - Change the active event vibe
+* `energy <value>` - Set target energy from 0-100; use `+N` or `-N` for a relative change
 
 ## Creating Events
 Use the config file to create events:

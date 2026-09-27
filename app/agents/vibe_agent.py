@@ -58,7 +58,7 @@ class VibeAgent:
             
         # Fallback to deterministic config
         return VibeRecommendation(
-            recommended_vibe=event_state.event_config.starting_vibe,
+            recommended_vibe=event_state.vibe_vector,
             preferred_genres=event_state.event_config.prefer_genres,
             preferred_languages=[],
             reason="Fallback to event config base vibe",

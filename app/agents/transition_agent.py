@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from app.models.queue import QueueItem
 from app.models.base import LockStatus
 from app.models.agent import AIRequest, AIResponse
+from app.models.base import AIMessageType
 from app.agents.ai_client import AIModelClient
 from app.event.event_bus import get_event_bus, BusEvent
 
@@ -68,13 +69,13 @@ class TransitionAgent:
             ]
             
             request = AIRequest(
-                agent_id="transition_agent",
-                task_type="queue_review",
-                context={
+                message_type=AIMessageType.TRANSITION_REVIEW,
+                queue_data=[item.model_dump(mode="json") for item in queue_items],
+                request_data={
                     "flexible_items": flexible_items,
-                    "issues": [i.model_dump() for i in issues]
+                    "issues": [i.model_dump() for i in issues],
+                    "prompt": "Recommend changes only to flexible queue items to address these transition issues. Return valid queue change objects.",
                 },
-                prompt="Given these transition issues, recommend reordering of flexible queue items to fix them. Return a list of actions (e.g. swap)."
             )
             response = await self.ai_client.decide(request)
             

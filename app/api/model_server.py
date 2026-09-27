@@ -23,11 +23,15 @@ import time
 import logging
 import traceback
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 import httpx
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 # ---------------------------------------------------------------------------
 # Pydantic request / response schemas (self-contained so the server can
@@ -260,7 +264,7 @@ class ExternalAPIBackend:
             "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
         )
         self.model_name: str = os.getenv(
-            "OPENROUTER_MODEL", "mistralai/mistral-7b-instruct:free"
+            "OPENROUTER_MODEL", "openrouter/free"
         )
         self.available: bool = bool(self.api_key)
         if not self.available:
@@ -285,8 +289,6 @@ class ExternalAPIBackend:
             ],
             "max_tokens": max_tokens,
             "temperature": 0.7,
-            "top_p": 0.9,
-            "response_format": {"type": "json_object"},
         }
 
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -297,7 +299,27 @@ class ExternalAPIBackend:
             )
             resp.raise_for_status()
             data = resp.json()
-            return data["choices"][0]["message"]["content"].strip()
+            content = data["choices"][0]["message"].get("content")
+            if not content:
+                raise RuntimeError("External AI provider returned an empty response")
+            return content.strip()
+
+
+def _backend_error_message(error: Exception) -> str:
+    if isinstance(error, httpx.HTTPStatusError):
+        try:
+            body = error.response.json()
+            details = body.get("error", {})
+            metadata = details.get("metadata", {}) if isinstance(details, dict) else {}
+            description = (
+                metadata.get("raw")
+                or (details.get("message") if isinstance(details, dict) else None)
+                or error.response.reason_phrase
+            )
+            return f"HTTP {error.response.status_code}: {str(description)[:300]}"
+        except (ValueError, TypeError):
+            return f"HTTP {error.response.status_code}: {error.response.reason_phrase}"
+    return str(error)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -361,21 +383,26 @@ class InferenceRouter:
         return self.active_backend
 
     # ------------------------------------------------------------------
-    async def generate(self, prompt: str, max_tokens: int = 1024) -> tuple[str, str]:
+    async def generate(self, prompt: str, max_tokens: int = 1024) -> tuple[str, str, str | None]:
         """
         Generate a response. Returns (text, backend_used).
         Falls back from local → external → mock on each request.
         """
         self.request_count += 1
 
+        errors = []
+
         # 1. Try local
         if self.active_backend == LLMBackend.LOCAL and self.local.loaded:
             try:
                 text = self.local.generate(prompt, max_new_tokens=max_tokens)
+                if not text:
+                    raise RuntimeError("Local model returned an empty response")
                 self.local_count += 1
-                return text, f"local:{self.local.model_name}"
+                return text, f"local:{self.local.model_name}", None
             except Exception as e:
                 logger.error(f"[ROUTER] Local inference failed: {e}")
+                errors.append(f"Local model failed: {_backend_error_message(e)}")
                 # Don't permanently switch — try external for this request
 
         # 2. Try external
@@ -383,13 +410,17 @@ class InferenceRouter:
             try:
                 text = await self.external.generate(prompt, max_tokens=max_tokens)
                 self.external_count += 1
-                return text, f"external:{self.external.model_name}"
+                return text, f"external:{self.external.model_name}", None
             except Exception as e:
-                logger.error(f"[ROUTER] External API failed: {e}")
+                details = _backend_error_message(e)
+                logger.error(f"[ROUTER] External API failed: {details}")
+                errors.append(f"External API failed: {details}")
+        else:
+            errors.append("External API key is not configured")
 
         # 3. Mock fallback
         self.error_count += 1
-        return "", "mock"
+        return "", "mock", "; ".join(errors) or "No AI backend is available"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -521,7 +552,8 @@ def parse_llm_json(raw: str) -> dict[str, Any]:
 
     # 1. Try direct parse
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {"raw_output": raw[:500]}
     except json.JSONDecodeError:
         pass
 
@@ -529,7 +561,8 @@ def parse_llm_json(raw: str) -> dict[str, Any]:
     cleaned = re.sub(r"```(?:json)?\s*", "", raw)
     cleaned = cleaned.strip().rstrip("`")
     try:
-        return json.loads(cleaned)
+        parsed = json.loads(cleaned)
+        return parsed if isinstance(parsed, dict) else {"raw_output": raw[:500]}
     except json.JSONDecodeError:
         pass
 
@@ -537,7 +570,8 @@ def parse_llm_json(raw: str) -> dict[str, Any]:
     match = re.search(r"\{[\s\S]*\}", cleaned)
     if match:
         try:
-            return json.loads(match.group())
+            parsed = json.loads(match.group())
+            return parsed if isinstance(parsed, dict) else {"raw_output": raw[:500]}
         except json.JSONDecodeError:
             pass
 
@@ -587,14 +621,24 @@ def mock_response(msg_type: str, request: AIRequest) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════════
 # FastAPI application
 # ═══════════════════════════════════════════════════════════════════════════
+START_TIME = time.time()
+router = InferenceRouter()
+
+
 app = FastAPI(
     title="AI DJ Model Server",
     description="Dual-backend LLM server (Local HF + OpenRouter fallback)",
     version="2.0.0",
 )
 
-START_TIME = time.time()
-router = InferenceRouter()
+@app.on_event("startup")
+async def initialize_backend() -> None:
+    """Initialize the configured backend when the API process starts."""
+    router.initialize(
+        force_backend=os.getenv("LLM_BACKEND", "auto"),
+        model_name=os.getenv("HF_MODEL_NAME", "TinyLlama/TinyLlama-1.1B-Chat-v1.0"),
+        dtype=os.getenv("HF_DTYPE", "float16"),
+    )
 
 
 class HealthResponse(BaseModel):
@@ -629,7 +673,7 @@ async def health_check():
         model_name = router.external.model_name
 
     return HealthResponse(
-        status="ok",
+        status="ok" if router.active_backend != LLMBackend.MOCK else "degraded",
         active_backend=router.active_backend.value,
         model_name=model_name,
         uptime=time.time() - START_TIME,
@@ -655,7 +699,7 @@ async def switch_backend(req: BackendSwitchRequest):
     return BackendSwitchResponse(
         success=result != LLMBackend.MOCK,
         active_backend=result.value,
-        message=router.local.load_error or "OK",
+        message="Backend initialized" if result != LLMBackend.MOCK else "No AI backend is available",
     )
 
 
@@ -674,16 +718,30 @@ async def ai_decide(request: AIRequest):
     prompt = build_task_prompt(request)
 
     # Generate
-    raw_text, backend_used = await router.generate(prompt)
+    raw_text, backend_used, inference_error = await router.generate(prompt)
     latency_ms = (time.time() - start) * 1000
 
     # Parse
+    response_error = inference_error
     if raw_text:
         parsed = parse_llm_json(raw_text)
+        if "raw_output" in parsed:
+            parsed = mock_response(msg_type, request)
+            backend_used = "mock"
+            response_error = "AI model returned invalid JSON"
     else:
         parsed = mock_response(msg_type, request)
-        backend_used = "mock"
 
+    candidate_ids = {
+        str(candidate.get("song_id", candidate.get("id")))
+        for candidate in request.candidate_songs
+        if candidate.get("song_id", candidate.get("id")) is not None
+    }
+    recommended_song_ids = [
+        str(song_id)
+        for song_id in parsed.get("recommended_song_ids", [])
+        if str(song_id) in candidate_ids
+    ]
     logger.info(
         f"[{backend_used}] {msg_type} -> {list(parsed.keys())[:5]}  ({latency_ms:.0f}ms)"
     )
@@ -692,7 +750,8 @@ async def ai_decide(request: AIRequest):
     return AIResponse(
         request_id=request.request_id or "",
         message_type=msg_type,
-        success=True,
+        success=backend_used != "mock",
+        error=response_error,
         decision=parsed.get("decision"),
         reason=parsed.get("reason", ""),
         confidence=float(parsed.get("confidence", 0.0)),
@@ -703,7 +762,7 @@ async def ai_decide(request: AIRequest):
         preferred_artists=parsed.get("preferred_artists", []),
         avoid_genres=parsed.get("avoid_genres", []),
         avoid_artists=parsed.get("avoid_artists", []),
-        recommended_song_ids=parsed.get("recommended_song_ids", []),
+        recommended_song_ids=recommended_song_ids,
         rejected_song_ids=parsed.get("rejected_song_ids", []),
         request_decision=parsed.get("request_decision"),
         bridge_strategy=parsed.get("bridge_strategy"),
@@ -758,18 +817,6 @@ async def ai_event_summary(request: AIRequest):
 # ═══════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     import uvicorn
-
-    # Initialize backend
-    backend_choice = os.getenv("LLM_BACKEND", "auto")
-    hf_model = os.getenv("HF_MODEL_NAME", "TinyLlama/TinyLlama-1.1B-Chat-v1.0")
-    hf_dtype = os.getenv("HF_DTYPE", "float16")
-
-    result = router.initialize(
-        force_backend=backend_choice,
-        model_name=hf_model,
-        dtype=hf_dtype,
-    )
-    logger.info(f"Server starting with backend: {result.value}")
 
     host = os.getenv("API_HOST", "0.0.0.0")
     port = int(os.getenv("API_PORT", "8000"))

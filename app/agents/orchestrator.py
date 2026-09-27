@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any, List
 
 from app.models.event import EventState, EventConfig
 from app.models.agent import AgentDecision
-from app.event.event_bus import get_event_bus, get_runtime_state, BusEvent
+from app.event.event_bus import BusEvent, BusMessage, get_event_bus, get_runtime_state
 from app.config.settings import get_settings
 
 from app.agents.vibe_agent import VibeAgent
@@ -16,7 +16,8 @@ from app.ranking.candidate_generator import CandidateGenerator
 from app.ranking.scoring_engine import ScoringEngine
 from app.policies.policy_engine import PolicyEngine
 from app.queue.queue_manager import QueueManager
-from app.models.request import SongRequest
+from app.models.request import RequestDecision, SongRequest
+from app.models.base import PlaybackState, RequestStatus, VibePreset, VibeVector
 from app.models.feedback import SongFeedback
 
 logger = logging.getLogger(__name__)
@@ -49,14 +50,20 @@ class DJOrchestrator:
         self.event_bus.subscribe(BusEvent.REQUEST_DECIDED, self._on_request_decided)
         self.event_bus.subscribe(BusEvent.FEEDBACK_RECEIVED, self._on_feedback_received)
         self.event_bus.subscribe(BusEvent.QUEUE_UPDATED, self._on_queue_updated)
+        self.event_bus.subscribe(BusEvent.COMMAND_EXECUTED, self._on_command_executed)
 
     async def start(self, event_config: EventConfig) -> None:
         """Start the DJ session with the given configuration."""
         self._loop = asyncio.get_running_loop()
         logger.info(f"Starting DJ Orchestrator for event: {event_config.event_id}")
+        starting_vibe = VibeVector.from_preset(event_config.starting_vibe)
         self.current_state = EventState(
             event_id=event_config.event_id,
-            event_config=event_config
+            event_config=event_config,
+            current_vibe=event_config.starting_vibe,
+            vibe_vector=starting_vibe,
+            target_energy=starting_vibe.energy,
+            current_energy=starting_vibe.energy,
         )
         self.is_running = True
         
@@ -77,7 +84,34 @@ class DJOrchestrator:
     async def handle_command(self, cmd: Dict[str, Any]) -> None:
         """Handle a manual command from the user interface."""
         logger.info(f"Received manual command: {cmd}")
-        # Process command and run decision cycle
+        if not self.current_state:
+            return
+
+        command = cmd.get("command")
+        args = cmd.get("args", [])
+        if command == "vibe" and args:
+            try:
+                preset = VibePreset(str(args[0]).lower())
+            except ValueError:
+                logger.warning("Ignoring unknown vibe preset %r", args[0])
+                return
+            self.current_state.current_vibe = preset
+            self.current_state.vibe_vector = VibeVector.from_preset(preset)
+            self.current_state.target_energy = self.current_state.vibe_vector.energy
+        elif command == "energy" and args:
+            try:
+                value = float(args[0])
+            except ValueError:
+                logger.warning("Ignoring invalid energy value %r", args[0])
+                return
+            if str(args[0]).startswith(("+", "-")):
+                value = self.current_state.target_energy + value / 100.0
+            else:
+                value /= 100.0
+            self.current_state.target_energy = min(1.0, max(0.0, value))
+        else:
+            return
+
         await self.run_decision_cycle("manual_command")
 
     async def run_decision_cycle(self, trigger: str) -> None:
@@ -154,50 +188,63 @@ class DJOrchestrator:
             self.current_state.queue = [item.song_id for item in self.queue_manager.items]
         
         # Publish state update
-        self.event_bus.publish(BusEvent.EVENT_STATE_UPDATED, source="orchestrator", data={"state": self.current_state.model_dump()})
-        self.runtime_state.update_event_state(self.current_state.model_dump())
+        state_snapshot = self.current_state.model_dump(mode="json")
+        self.event_bus.publish(
+            BusEvent.EVENT_STATE_UPDATED,
+            source="orchestrator",
+            data={"state": state_snapshot},
+        )
+        self.runtime_state.update_event_state(state_snapshot)
+        self.runtime_state.update_queue_state(self.queue_manager.get_state().model_dump(mode="json"))
 
-    def _on_song_started(self, payload: Dict[str, Any]) -> None:
+    def _on_song_started(self, message: BusMessage) -> None:
         if self.is_running and self.current_state and self._loop:
             logger.info("Song started event received")
-            # Update state with playing song
+            self.current_state.current_song_id = message.data.get("song_id")
+            self.current_state.playback_state = PlaybackState.PLAYING
             asyncio.run_coroutine_threadsafe(self.run_decision_cycle("song_begins"), self._loop)
 
-    def _on_song_ended(self, payload: Dict[str, Any]) -> None:
+    def _on_song_ended(self, message: BusMessage) -> None:
         if self.is_running and self.current_state and self._loop:
             logger.info("Song ended event received")
+            self.current_state.current_song_id = None
+            self.current_state.playback_state = PlaybackState.STOPPED
             # Usually advance the queue
             self.queue_manager.advance()
             asyncio.run_coroutine_threadsafe(self.run_decision_cycle("song_ending"), self._loop)
 
-    def _on_request_received(self, payload: Dict[str, Any]) -> None:
+    def _on_request_received(self, message: BusMessage) -> None:
         if self.is_running and self.current_state and self._loop:
             logger.info("Request received event received")
+            payload = message.data
             if "request" in payload:
                 try:
-                    req = SongRequest(**payload["request"])
+                    req = SongRequest.model_validate(payload["request"])
                     asyncio.run_coroutine_threadsafe(self.request_agent.evaluate_request(req, self.current_state), self._loop)
                 except Exception as e:
                     logger.error(f"Error parsing request: {e}")
             asyncio.run_coroutine_threadsafe(self.run_decision_cycle("request_received"), self._loop)
 
-    def _on_request_decided(self, payload: Dict[str, Any]) -> None:
+    def _on_request_decided(self, message: BusMessage) -> None:
         if self.is_running and self.current_state and self._loop:
             logger.info("Request decided event received")
-            if "decision" in payload:
+            payload = message.data
+            if "decision" in payload and "request" in payload:
                 try:
-                    from app.models.request import RequestDecision
-                    from app.models.base import RequestStatus
-                    decision = RequestDecision(**payload["decision"])
-                    if decision.status == RequestStatus.QUEUED:
-                        self.current_state.accepted_requests.append(decision.request_id)
+                    decision = RequestDecision.model_validate(payload["decision"])
+                    request = SongRequest.model_validate(payload["request"])
+                    if decision.request_id != request.request_id:
+                        raise ValueError("Request decision ID does not match its request")
+                    if request.status == RequestStatus.QUEUED and request.request_id not in self.current_state.accepted_requests:
+                        self.current_state.accepted_requests.append(request.request_id)
                         asyncio.run_coroutine_threadsafe(self.run_decision_cycle("request_accepted"), self._loop)
                 except Exception as e:
                     logger.error(f"Error processing request decision: {e}")
 
-    def _on_feedback_received(self, payload: Dict[str, Any]) -> None:
+    def _on_feedback_received(self, message: BusMessage) -> None:
         if self.is_running and self.current_state and self._loop:
             logger.info("Feedback received event received")
+            payload = message.data
             if "feedback" in payload:
                 try:
                     fb = SongFeedback(**payload["feedback"])
@@ -206,9 +253,12 @@ class DJOrchestrator:
                     logger.error(f"Error parsing feedback: {e}")
             asyncio.run_coroutine_threadsafe(self.run_decision_cycle("feedback_received"), self._loop)
 
-    def _on_queue_updated(self, payload: Dict[str, Any]) -> None:
+    def _on_queue_updated(self, message: BusMessage) -> None:
         if self.is_running and self.current_state and self._loop:
             logger.info("Queue updated event received")
             if self.queue_manager.needs_refill():
                 asyncio.run_coroutine_threadsafe(self.run_decision_cycle("queue_needs_refill"), self._loop)
 
+    def _on_command_executed(self, message: BusMessage) -> None:
+        if self.is_running and self._loop:
+            asyncio.run_coroutine_threadsafe(self.handle_command(message.data), self._loop)

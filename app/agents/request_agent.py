@@ -1,103 +1,159 @@
 from __future__ import annotations
-import logging
-from typing import Optional, Dict, Any, List
 
-from app.models.request import SongRequest, RequestDecision, RequestStatus
-from app.models.event import EventState
-from app.models.agent import AIRequest, AIResponse
+import logging
+
 from app.agents.ai_client import AIModelClient
-from app.event.event_bus import get_event_bus, BusEvent
+from app.event.event_bus import BusEvent, get_event_bus
+from app.models.agent import AIRequest
+from app.models.base import AIMessageType, RequestDecisionType, RequestStatus, utc_now
+from app.models.event import EventState
+from app.models.request import RequestDecision, SongRequest
 
 logger = logging.getLogger(__name__)
 
+
 class RequestAgent:
     """Agent responsible for handling and evaluating song requests."""
-    
-    def __init__(self, ai_client: Optional[AIModelClient] = None):
+
+    def __init__(self, ai_client: AIModelClient | None = None):
         self.ai_client = ai_client or AIModelClient()
         self.event_bus = get_event_bus()
-        self.deferred_requests: List[SongRequest] = []
-        self.requests: Dict[str, SongRequest] = {}
+        self.deferred_requests: list[SongRequest] = []
+        self.requests: dict[str, SongRequest] = {}
 
-    async def evaluate_request(self, request: SongRequest, event_state: EventState) -> RequestDecision:
-        """Evaluate a song request and decide how to handle it."""
+    async def evaluate_request(
+        self, request: SongRequest, event_state: EventState
+    ) -> RequestDecision:
+        """Evaluate a request and record each lifecycle transition."""
         self.requests[request.request_id] = request
         self._update_status(request, RequestStatus.VALIDATING)
-        
-        # 1. Deterministic Policy Check (e.g. is it blacklisted?)
         self._update_status(request, RequestStatus.POLICY_CHECK)
-        # Placeholder policy check
-        
-        # Match song if not matched
+
         if not request.matched_song_id:
-            from app.database.repositories import get_repository
-            song_repo = get_repository("song")
-            # Simple simulation: get all and find substring match
-            all_songs = song_repo.get_all(limit=100)
-            for s in all_songs:
-                if request.requested_song_query.lower() in s.title.lower() or request.requested_song_query.lower() in s.artist.lower():
-                    request.matched_song_id = s.song_id
-                    break
-            if not request.matched_song_id and all_songs:
-                request.matched_song_id = all_songs[0].song_id # fallback match
-        
-        self._update_status(request, RequestStatus.ANALYZING)
-        
-        try:
-            from app.models.base import AIMessageType
-            ai_req = AIRequest(
-                message_type=AIMessageType.REQUEST_DECISION,
-                request_data={
-                    "event_state": event_state.model_dump(mode="json"),
-                    "request": request.model_dump(mode="json"),
-                    "prompt": "Evaluate if this requested song is appropriate for the current event vibe. Decide: ACCEPT_NOW, QUEUE, DEFER, BRIDGE, REJECT."
-                }
-            )
-            response = await self.ai_client.decide(ai_req)
-            
-            if response.success:
-                decision_str = response.request_decision or response.decision or "QUEUE"
-                reason = response.reason or "AI decided"
-                
-                decision = RequestDecision(
-                    request_id=request.request_id,
-                    status=self._map_decision_to_status(decision_str),
-                    reason=reason,
-                    decision=decision_str.upper() if decision_str.upper() in ["ACCEPT_NOW", "QUEUE", "DEFER", "BRIDGE", "REJECT"] else "QUEUE"
+            try:
+                from app.database.repositories import get_repository
+
+                song_repo = get_repository("song")
+                query = request.requested_song_query.casefold()
+                for song in song_repo.get_all(limit=100):
+                    if query in song.title.casefold() or query in song.artist.casefold():
+                        request.matched_song_id = song.song_id
+                        break
+            except Exception:
+                logger.exception(
+                    "Failed to search the song catalog for request %s", request.request_id
                 )
-                self._update_status(request, decision.status, reason)
-                self.event_bus.publish(BusEvent.REQUEST_DECIDED, source="request_agent", data={"decision": decision.model_dump(mode="json"), "request": request.model_dump(mode="json")})
-                
-                if decision.status == RequestStatus.DEFERRED:
-                    self.deferred_requests.append(request)
-                    
-                return decision
-                
-        except Exception as e:
-            logger.warning(f"AI request evaluation failed: {e}. Falling back to deterministic.")
-            
-        # Fallback decision
+                return self._finish_request(
+                    request,
+                    RequestDecisionType.REJECT,
+                    "Song catalog lookup failed",
+                    1.0,
+                    event_state,
+                )
+
+        self._update_status(request, RequestStatus.ANALYZING)
+        if not request.matched_song_id:
+            return self._finish_request(
+                request,
+                RequestDecisionType.REJECT,
+                "No matching song is available in the local library",
+                1.0,
+                event_state,
+            )
+
+        try:
+            response = await self.ai_client.decide(
+                AIRequest(
+                    message_type=AIMessageType.REQUEST_DECISION,
+                    request_data={
+                        "event_state": event_state.model_dump(mode="json"),
+                        "request": request.model_dump(mode="json"),
+                        "prompt": (
+                            "Evaluate whether this request fits the current event. Choose "
+                            "ACCEPT_NOW, QUEUE, DEFER, BRIDGE, or REJECT."
+                        ),
+                    },
+                )
+            )
+            if response.success:
+                proposed = (response.request_decision or response.decision or "").upper()
+                try:
+                    decision_type = RequestDecisionType(proposed)
+                except ValueError:
+                    logger.warning("AI returned invalid request decision %r; using QUEUE", proposed)
+                else:
+                    return self._finish_request(
+                        request,
+                        decision_type,
+                        response.reason or "AI decision",
+                        response.confidence,
+                        event_state,
+                    )
+        except Exception:
+            logger.exception("AI request evaluation failed for %s", request.request_id)
+
+        return self._finish_request(
+            request,
+            RequestDecisionType.QUEUE,
+            "AI unavailable; queued by deterministic fallback",
+            0.0,
+            event_state,
+        )
+
+    def _finish_request(
+        self,
+        request: SongRequest,
+        decision_type: RequestDecisionType,
+        reason: str,
+        confidence: float,
+        event_state: EventState,
+    ) -> RequestDecision:
+        request.decision = decision_type
+        request.decision_reason = reason
+        request.decision_confidence = confidence
+        request.decided_at = utc_now()
+
+        self._update_status(request, RequestStatus.DECISION, reason)
+        status = self._map_decision_to_status(decision_type)
+        self._update_status(request, status, reason)
+
+        if status == RequestStatus.DEFERRED and request not in self.deferred_requests:
+            self.deferred_requests.append(request)
+
         decision = RequestDecision(
             request_id=request.request_id,
-            status=RequestStatus.QUEUED,
-            reason="Fallback to accept and queue",
-            decision="QUEUE"
+            decision=decision_type,
+            reason=reason,
+            confidence=confidence,
+            decision_epoch=event_state.decision_epoch,
+            event_id=event_state.event_id,
         )
-        self._update_status(request, decision.status, decision.reason)
-        self.event_bus.publish(BusEvent.REQUEST_DECIDED, source="request_agent", data={"decision": decision.model_dump(mode="json"), "request": request.model_dump(mode="json")})
+        self.event_bus.publish(
+            BusEvent.REQUEST_DECIDED,
+            source="request_agent",
+            data={
+                "decision": decision.model_dump(mode="json"),
+                "request": request.model_dump(mode="json"),
+            },
+        )
         return decision
 
-    def _map_decision_to_status(self, decision_str: str) -> RequestStatus:
-        mapping = {
-            "ACCEPT_NOW": RequestStatus.QUEUED, # Or PLAY_NEXT depending on logic
-            "QUEUE": RequestStatus.QUEUED,
-            "DEFER": RequestStatus.DEFERRED,
-            "BRIDGE": RequestStatus.BRIDGING,
-            "REJECT": RequestStatus.REJECTED
-        }
-        return mapping.get(decision_str.upper(), RequestStatus.QUEUED)
+    @staticmethod
+    def _map_decision_to_status(decision: RequestDecisionType) -> RequestStatus:
+        return {
+            RequestDecisionType.ACCEPT_NOW: RequestStatus.QUEUED,
+            RequestDecisionType.QUEUE: RequestStatus.QUEUED,
+            RequestDecisionType.DEFER: RequestStatus.DEFERRED,
+            RequestDecisionType.BRIDGE: RequestStatus.BRIDGING,
+            RequestDecisionType.REJECT: RequestStatus.REJECTED,
+        }[decision]
 
-    def _update_status(self, request: SongRequest, status: RequestStatus, reason: Optional[str] = None) -> None:
-        request.status = status
-        # In a real app, we'd append to request.status_history here
-        logger.info(f"Request {request.id} status updated to {status.value}")
+    @staticmethod
+    def _update_status(
+        request: SongRequest,
+        status: RequestStatus,
+        reason: str = "",
+    ) -> None:
+        if request.status != status:
+            request.transition_to(status, reason=reason, agent="REQUEST_AGENT")
+        logger.info("Request %s status updated to %s", request.request_id, status.value)

@@ -33,7 +33,7 @@ class SongSelectionAgent:
             from app.models.base import AIMessageType
             candidates_data = [{"id": c.song.song_id, "title": c.song.title, "artist": c.song.artist} for c in top_candidates]
             request = AIRequest(
-                message_type=AIMessageType.QUEUE_REVIEW,
+                message_type=AIMessageType.DJ_DECISION,
                 candidate_songs=candidates_data,
                 request_data={
                     "event_state": event_state.model_dump(mode="json"),
