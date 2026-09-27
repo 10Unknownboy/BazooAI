@@ -29,6 +29,21 @@ class CapturingAIClient:
         return self.response
 
 
+class PlayableRequestCatalog:
+    def __init__(self, songs=None):
+        self.songs = songs or {}
+        self.song_repo = self
+
+    def find_local_matches(self, query, limit=5):
+        return []
+
+    def get(self, song_id):
+        return self.songs.get(song_id)
+
+    def is_playable_local_track(self, song):
+        return song is not None
+
+
 def test_lyrics_agent_sends_supported_ai_request():
     response = AIResponse(
         request_id="lyrics-test",
@@ -101,7 +116,10 @@ def test_request_agent_records_decision_lifecycle(sample_event_state):
     )
 
     decision = asyncio.run(
-        RequestAgent(ai_client=client).evaluate_request(request, sample_event_state)
+        RequestAgent(
+            ai_client=client,
+            candidate_generator=PlayableRequestCatalog({"SNG_test001": object()}),
+        ).evaluate_request(request, sample_event_state)
     )
 
     assert decision.decision == RequestDecisionType.QUEUE
@@ -116,14 +134,6 @@ def test_request_agent_records_decision_lifecycle(sample_event_state):
 
 
 def test_request_agent_rejects_unmatched_song(monkeypatch, sample_event_state):
-    class EmptySongRepository:
-        def get_all(self, limit):
-            return []
-
-    monkeypatch.setattr(
-        "app.database.repositories.get_repository",
-        lambda _: EmptySongRepository(),
-    )
     client = CapturingAIClient(
         AIResponse(
             request_id="unmatched-request",
@@ -136,7 +146,10 @@ def test_request_agent_rejects_unmatched_song(monkeypatch, sample_event_state):
     )
 
     decision = asyncio.run(
-        RequestAgent(ai_client=client).evaluate_request(request, sample_event_state)
+        RequestAgent(
+            ai_client=client,
+            candidate_generator=PlayableRequestCatalog(),
+        ).evaluate_request(request, sample_event_state)
     )
 
     assert client.request is None

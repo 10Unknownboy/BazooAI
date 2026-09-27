@@ -21,6 +21,7 @@ class PlaybackController:
         self.current_song: Song | None = None
         self.previous_item = None
         self.is_playing = False
+        self.last_error: str | None = None
         self._stop_monitor = threading.Event()
         self._monitor_thread = threading.Thread(
             target=self._monitor_playback,
@@ -54,20 +55,31 @@ class PlaybackController:
 
         item = self.queue.get_current()
         if item is None:
+            self.last_error = "The playback queue is empty."
             logger.warning("Cannot play: queue is empty")
             return False
         if not self.provider.play(item.song_id):
-            logger.error("Playback provider failed to start song %s", item.song_id)
+            provider_error = getattr(self.provider, "last_error", None)
+            self.last_error = provider_error or (
+                f"Playback provider could not start {item.song_title or item.song_id} "
+                f"({item.song_id})."
+            )
+            logger.error(
+                "Playback provider failed to start song %s: %s",
+                item.song_id,
+                self.last_error,
+            )
             self.event_bus.publish(
                 BusEvent.ERROR,
                 source="playback",
                 data={
-                    "message": "Playback provider failed to start the queued song",
+                    "message": self.last_error,
                     "song_id": item.song_id,
                 },
             )
             return False
 
+        self.last_error = None
         provider_song = self.provider.get_song(item.song_id) or {}
         self.current_song = Song(
             song_id=item.song_id,

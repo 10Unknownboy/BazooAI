@@ -50,10 +50,14 @@ python -m app --simulate
 ```
 
 ## Colab Model Server
-1. Open `notebooks/ai_dj_colab_server.ipynb` in Colab and run it.
-2. Add model-provider and ngrok credentials to Colab Secrets; do not put them in the local `.env`
-   or source files.
-3. Set the resulting ngrok base URL as `AI_MODEL_URL` in the local `.env`.
+1. Set the Colab runtime to a GPU and add `NGROK_AUTH_TOKEN` to Colab Secrets.
+2. Run `notebooks/ai_dj_colab_server.ipynb`. It downloads the public
+   `Qwen/Qwen2.5-1.5B-Instruct` model and requires a successful local inference smoke test;
+   it does not fall back to OpenRouter or mock responses.
+   The notebook clones the repository; ensure your latest project changes are pushed to the
+   branch configured in its repository cell.
+3. Set the printed ngrok URL as `AI_MODEL_URL` in the local `.env` and restart Streamlit.
+   Keep the Colab runtime running while using the DJ.
 
 ## Manual Live AI Check
 After the Colab server is running and `AI_MODEL_URL` points to its ngrok URL, send a real
@@ -61,8 +65,12 @@ structured decision request from the local project:
 ```powershell
 python scripts/model_probe.py
 ```
-The probe fails if the remote server is using the deterministic mock backend, returns invalid
-candidate IDs, or cannot reach a real model. Free-provider capacity can be rate-limited.
+The probe fails unless the remote server is using the local Hugging Face model, returns valid
+candidate IDs, and responds to a real inference request.
+
+The Streamlit **API Console** also has a **Run live AI decision check** button. Playback
+candidates are restricted to existing local files, at least 30 seconds long by default, and
+exclude configurable sound-effect terms in `config/scoring_weights.yaml`.
 
 ## Commands
 * `play` - Start playback

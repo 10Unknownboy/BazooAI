@@ -8,6 +8,7 @@ from app.models.agent import AIRequest
 from app.models.base import AIMessageType, RequestDecisionType, RequestStatus, utc_now
 from app.models.event import EventState
 from app.models.request import RequestDecision, SongRequest
+from app.ranking.candidate_generator import CandidateGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -15,8 +16,13 @@ logger = logging.getLogger(__name__)
 class RequestAgent:
     """Agent responsible for handling and evaluating song requests."""
 
-    def __init__(self, ai_client: AIModelClient | None = None):
+    def __init__(
+        self,
+        ai_client: AIModelClient | None = None,
+        candidate_generator: CandidateGenerator | None = None,
+    ):
         self.ai_client = ai_client or AIModelClient()
+        self.candidate_generator = candidate_generator or CandidateGenerator()
         self.event_bus = get_event_bus()
         self.deferred_requests: list[SongRequest] = []
         self.requests: dict[str, SongRequest] = {}
@@ -31,25 +37,24 @@ class RequestAgent:
 
         if not request.matched_song_id:
             try:
-                from app.database.repositories import get_repository
-
-                song_repo = get_repository("song")
-                query = request.requested_song_query.casefold()
-                for song in song_repo.get_all(limit=100):
-                    if query in song.title.casefold() or query in song.artist.casefold():
-                        request.matched_song_id = song.song_id
-                        break
+                matches = self.candidate_generator.find_local_matches(
+                    request.requested_song_query,
+                    limit=1,
+                )
             except Exception:
                 logger.exception(
-                    "Failed to search the song catalog for request %s", request.request_id
+                    "Failed to search the local music library for request %s",
+                    request.request_id,
                 )
                 return self._finish_request(
                     request,
                     RequestDecisionType.REJECT,
-                    "Song catalog lookup failed",
+                    "Local music library lookup failed",
                     1.0,
                     event_state,
                 )
+            if matches:
+                request.matched_song_id = matches[0].song_id
 
         self._update_status(request, RequestStatus.ANALYZING)
         if not request.matched_song_id:
@@ -57,6 +62,17 @@ class RequestAgent:
                 request,
                 RequestDecisionType.REJECT,
                 "No matching song is available in the local library",
+                1.0,
+                event_state,
+            )
+        requested_song = self.candidate_generator.song_repo.get(request.matched_song_id)
+        if not requested_song or not self.candidate_generator.is_playable_local_track(
+            requested_song
+        ):
+            return self._finish_request(
+                request,
+                RequestDecisionType.REJECT,
+                "The matched track is no longer playable from the local music library",
                 1.0,
                 event_state,
             )

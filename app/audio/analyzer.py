@@ -1,18 +1,21 @@
 from __future__ import annotations
+
 import logging
 from typing import Optional
-from app.models.song import AudioFeatures
-from app.database.repositories import AudioFeaturesRepository
-from app.event.event_bus import get_event_bus, BusEvent
-from app.audio.feature_extractor import FeatureExtractor
+
+from app.audio.constants import AUDIO_ANALYZER_VERSION
 from app.audio.embeddings import EmbeddingManager
+from app.audio.feature_extractor import FeatureExtractor
+from app.database.repositories import AudioFeaturesRepository
+from app.event.event_bus import BusEvent, get_event_bus
+from app.models.song import AudioFeatures
 
 logger = logging.getLogger(__name__)
 
 class AudioAnalyzer:
     """Audio analysis service (spec §8, 24)."""
     
-    ANALYZER_VERSION = '1.0.0'
+    ANALYZER_VERSION = AUDIO_ANALYZER_VERSION
     
     def __init__(self, repository: AudioFeaturesRepository, feature_extractor: FeatureExtractor, embedding_manager: EmbeddingManager):
         self.repository = repository

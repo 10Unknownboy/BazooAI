@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 
 from pydantic import Field
 
@@ -159,6 +158,8 @@ class Song(DJBaseModel):
     lyrics_features: LyricsFeatures | None = None
 
     def has_audio_analysis(self) -> bool:
+        if self.audio_features is not None:
+            return self._usable_audio_features() is not None
         return self.audio_analysis_status == AnalysisStatus.COMPLETE
 
     def has_lyrics_analysis(self) -> bool:
@@ -166,27 +167,39 @@ class Song(DJBaseModel):
 
     def effective_energy(self) -> float:
         """Best estimate of energy from any available source."""
-        if self.audio_features and self.audio_features.energy is not None:
-            return self.audio_features.energy
+        features = self._usable_audio_features()
+        if features and features.energy is not None:
+            return features.energy
         if self.energy is not None:
             return self.energy
         return 0.5
 
     def effective_bpm(self) -> float | None:
-        if self.audio_features and self.audio_features.bpm is not None:
-            return self.audio_features.bpm
+        features = self._usable_audio_features()
+        if features and features.bpm is not None:
+            return features.bpm
         return self.bpm
 
     def effective_danceability(self) -> float:
-        if self.audio_features and self.audio_features.danceability is not None:
-            return self.audio_features.danceability
+        features = self._usable_audio_features()
+        if features and features.danceability is not None:
+            return features.danceability
         if self.danceability is not None:
             return self.danceability
         return 0.5
 
     def effective_valence(self) -> float:
-        if self.audio_features and self.audio_features.valence is not None:
-            return self.audio_features.valence
+        features = self._usable_audio_features()
+        if features and features.valence is not None:
+            return features.valence
         if self.valence is not None:
             return self.valence
         return 0.5
+
+    def _usable_audio_features(self) -> AudioFeatures | None:
+        features = self.audio_features
+        if not features or features.analysis_status != AnalysisStatus.COMPLETE:
+            return None
+        if self.file_hash and features.file_hash and self.file_hash != features.file_hash:
+            return None
+        return features

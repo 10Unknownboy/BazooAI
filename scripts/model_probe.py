@@ -35,8 +35,11 @@ async def probe_model(base_url: str, timeout: int) -> int:
             }
         ),
     )
-    if health.get("active_backend") == "mock":
-        print("No real model backend is active; this is not a live AI test.", file=sys.stderr)
+    if health.get("active_backend") != "local":
+        print(
+            "The server is not using the requested local Hugging Face backend.",
+            file=sys.stderr,
+        )
         return 2
 
     request = AIRequest(
@@ -83,7 +86,7 @@ async def probe_model(base_url: str, timeout: int) -> int:
     print("Live decision:", json.dumps(output, ensure_ascii=False))
 
     candidate_ids = {song["song_id"] for song in request.candidate_songs}
-    if not result.success or not result.model_name or result.model_name == "mock":
+    if not result.success or not result.model_name or not result.model_name.startswith("local:"):
         return 1
     if not result.recommended_song_ids or not set(result.recommended_song_ids) <= candidate_ids:
         print("Model response did not contain valid candidate IDs.", file=sys.stderr)

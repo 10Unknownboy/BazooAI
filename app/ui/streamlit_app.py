@@ -8,12 +8,14 @@ from typing import Any
 
 import streamlit as st
 
+from app.agents.ai_client import AIModelClient
 from app.agents.orchestrator import DJOrchestrator
 from app.api.guest_api import configure_runtime, guest_url, start_guest_server
 from app.config.settings import get_settings
 from app.console.logging_setup import setup_logging
 from app.event.event_bus import BusEvent, get_event_bus, get_runtime_state
-from app.models.base import EventType, VibePreset
+from app.models.agent import AIRequest
+from app.models.base import AIMessageType, EventType, VibePreset
 from app.models.event import EventConfig
 from app.models.feedback import SongFeedback
 from app.models.request import SongRequest
@@ -242,7 +244,8 @@ with tabs[0]:
         control_columns = st.columns(5)
         if control_columns[0].button("Play / Resume"):
             if not playback.play():
-                st.warning("Playback could not start. Check that the queued track exists locally.")
+                error = playback.last_error or "unknown provider error"
+                st.warning(f"Playback could not start: {error}")
             else:
                 st.rerun()
         if control_columns[1].button("Pause"):
@@ -395,6 +398,53 @@ with tabs[1]:
 
 with tabs[2]:
     st.subheader("AI/API activity")
+    if st.button("Run live AI decision check"):
+        playable_tracks = (
+            orchestrator.candidate_generator.get_playable_library_tracks(limit=3)
+        )
+        if not playable_tracks:
+            st.error("No local music tracks at least 30 seconds long are available to test.")
+        else:
+            request = AIRequest(
+                message_type=AIMessageType.DJ_DECISION,
+                candidate_songs=[
+                    {
+                        "song_id": track.song_id,
+                        "title": track.title,
+                        "artist": track.artist,
+                    }
+                    for track in playable_tracks
+                ],
+                request_data={
+                    "prompt": (
+                        "Choose one suitable supplied track for the event. "
+                        "Return only an ID from the candidates and a short reason."
+                    )
+                },
+            )
+            try:
+                result = _run_coroutine(
+                    loop, AIModelClient().decide(request)
+                ).result(timeout=120)
+            except Exception as error:
+                logger.exception("Manual AI model check failed")
+                st.error(f"AI model check failed: {error}")
+            else:
+                if (
+                    result.success
+                    and result.model_name
+                    and result.model_name.startswith("local:")
+                ):
+                    st.success(
+                        f"Live model: {result.model_name} · "
+                        f"{result.latency_ms or 0:.0f} ms"
+                    )
+                    st.write(result.reason)
+                    st.write(f"Recommended IDs: {result.recommended_song_ids}")
+                else:
+                    st.error(
+                        f"No live model response: {result.error or 'unknown AI error'}"
+                    )
     messages = event_bus.get_history(limit=100)
     if not messages:
         st.caption("No API or model events have been recorded yet.")
