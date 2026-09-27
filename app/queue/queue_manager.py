@@ -50,34 +50,36 @@ class QueueManager:
         song_title: str = "",
         song_artist: str = "",
         decision_epoch: int = 0,
+        penalty_components: dict[str, float] | None = None,
+        request_id: str | None = None,
     ) -> QueueItem | None:
         """Add a song to the queue."""
-        try:
-            if position is None:
-                position = len(self._state.items)
-            position = min(position, len(self._state.items))
+        existing = next((item for item in self._state.items if item.song_id == song_id), None)
+        if existing:
+            logger.debug("Song %s is already present in the queue", song_id)
+            return existing
 
-            lock = self._lock_for_position(position)
+        if position is None:
+            position = len(self._state.items)
+        position = max(0, min(position, len(self._state.items)))
 
-            item = QueueItem(
-                song_id=song_id,
-                position=position,
-                lock_status=lock,
-                final_score=score,
-                score_components=components or {},
-                song_title=song_title,
-                song_artist=song_artist,
-                decision_epoch=decision_epoch,
-            )
+        item = QueueItem(
+            song_id=song_id,
+            position=position,
+            lock_status=self._lock_for_position(position),
+            final_score=score,
+            score_components=components or {},
+            penalty_components=penalty_components or {},
+            song_title=song_title,
+            song_artist=song_artist,
+            decision_epoch=decision_epoch,
+            request_id=request_id,
+        )
 
-            self._state.items.insert(position, item)
-            self._refresh_positions()
-            self._publish(BusEvent.QUEUE_ITEM_ADDED, {"song_id": song_id, "position": position})
-            return item
-
-        except Exception as e:
-            logger.error(f"Error adding song to queue: {e}")
-            return None
+        self._state.items.insert(position, item)
+        self._refresh_positions()
+        self._publish(BusEvent.QUEUE_ITEM_ADDED, {"song_id": song_id, "position": position})
+        return item
 
     def remove_at(self, position: int) -> bool:
         """Remove a song from the queue. Only non-LOCKED positions allowed."""

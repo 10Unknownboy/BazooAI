@@ -4,16 +4,25 @@ from typing import Optional, Dict, Any, List
 
 from app.models.song import Song
 from app.models.event import EventState
-from app.models.agent import AIRequest, AIResponse, ScoringSnapshot
+from app.models.agent import AIRequest
 from app.agents.ai_client import AIModelClient
 
 logger = logging.getLogger(__name__)
 
 class ScoredCandidate:
-    def __init__(self, song: Song, score: float, breakdown: Dict[str, float]):
+    def __init__(
+        self,
+        song: Song,
+        score: float,
+        breakdown: Dict[str, float],
+        penalties: Dict[str, float] | None = None,
+        request_id: str | None = None,
+    ):
         self.song = song
         self.score = score
         self.breakdown = breakdown
+        self.penalties = penalties or {}
+        self.request_id = request_id
 
 class SongSelectionAgent:
     """Agent responsible for selecting and scoring candidate songs."""

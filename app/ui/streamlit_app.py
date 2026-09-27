@@ -1,170 +1,419 @@
-import streamlit as st
-import threading
-import time
-import asyncio
-from typing import Optional
-import os
+from __future__ import annotations
 
-from app.event.event_bus import get_event_bus, BusEvent
+import asyncio
+import logging
+import threading
+from concurrent.futures import Future
+from typing import Any
+
+import streamlit as st
+
 from app.agents.orchestrator import DJOrchestrator
-from app.queue.queue_manager import QueueManager
+from app.api.guest_api import configure_runtime, guest_url, start_guest_server
+from app.config.settings import get_settings
+from app.console.logging_setup import setup_logging
+from app.event.event_bus import BusEvent, get_event_bus, get_runtime_state
+from app.models.base import EventType, VibePreset
+from app.models.event import EventConfig
+from app.models.feedback import SongFeedback
+from app.models.request import SongRequest
+from app.music.local_library import sync_local_library
 from app.playback.playback_controller import PlaybackController
 from app.providers.local_file_provider import LocalFileProvider
-from app.config.settings import get_settings
-from app.models.event import EventConfig
+from app.queue.queue_manager import QueueManager
 
-st.set_page_config(page_title="AI DJ System Dashboard", layout="wide")
+logger = logging.getLogger(__name__)
+
+st.set_page_config(page_title="AI DJ System", page_icon="🎛️", layout="wide")
+
+
+def _run_coroutine(loop: asyncio.AbstractEventLoop, coroutine) -> Future:
+    if not loop.is_running():
+        coroutine.close()
+        raise RuntimeError("The DJ runtime event loop is not running")
+    return asyncio.run_coroutine_threadsafe(coroutine, loop)
+
 
 @st.cache_resource
-def init_system():
+def init_system() -> dict[str, Any]:
     settings = get_settings()
-    
-    event_bus = get_event_bus()
-    
-    music_dir = str(settings.local_music_dir) if settings.local_music_dir else r"D:\media\music"
-    if not os.path.exists(music_dir):
-        try:
-            os.makedirs(music_dir, exist_ok=True)
-        except Exception:
-            pass
-        
-    provider = LocalFileProvider(directory=music_dir)
-    
+    setup_logging(log_dir=str(settings.log_dir))
+
+    music_dir = settings.local_music_dir
+    music_dir.mkdir(parents=True, exist_ok=True)
+
+    provider = LocalFileProvider(directory=str(music_dir))
+    synced_songs = sync_local_library(provider)
     queue_manager = QueueManager()
+    orchestrator = DJOrchestrator(queue_manager=queue_manager)
     playback_controller = PlaybackController(queue_manager, provider)
-    
-    orchestrator = DJOrchestrator()
-    
+    event_bus = get_event_bus()
+    runtime_state = get_runtime_state()
+    configure_runtime(
+        playback=playback_controller,
+        music_provider=provider,
+        event_bus=event_bus,
+        runtime_state=runtime_state,
+    )
+    guest_server_error = None
+    try:
+        guest_portal_url, guest_server_ready = start_guest_server()
+    except (RuntimeError, TimeoutError) as error:
+        logger.exception("Guest request portal failed to start")
+        guest_portal_url = guest_url()
+        guest_server_ready = False
+        guest_server_error = str(error)
+
     loop = asyncio.new_event_loop()
-    def run_loop(loop):
+
+    def run_loop() -> None:
         asyncio.set_event_loop(loop)
         loop.run_forever()
-        
-    t = threading.Thread(target=run_loop, args=(loop,), daemon=True)
-    t.start()
-    
+
+    thread = threading.Thread(target=run_loop, name="dj-runtime", daemon=True)
+    thread.start()
+
     return {
-        "event_bus": event_bus,
+        "music_dir": music_dir,
+        "synced_songs": synced_songs,
         "provider": provider,
         "queue_manager": queue_manager,
-        "playback_controller": playback_controller,
         "orchestrator": orchestrator,
-        "loop": loop
+        "playback_controller": playback_controller,
+        "event_bus": event_bus,
+        "runtime_state": runtime_state,
+        "guest_portal_url": guest_portal_url,
+        "guest_server_ready": guest_server_ready,
+        "guest_server_error": guest_server_error,
+        "loop": loop,
+        "thread": thread,
     }
 
+
 system = init_system()
-orchestrator = system["orchestrator"]
-playback_controller = system["playback_controller"]
-queue_manager = system["queue_manager"]
-provider = system["provider"]
-loop = system["loop"]
+orchestrator: DJOrchestrator = system["orchestrator"]
+provider: LocalFileProvider = system["provider"]
+playback: PlaybackController = system["playback_controller"]
+event_bus = system["event_bus"]
+runtime_state = system["runtime_state"]
+loop: asyncio.AbstractEventLoop = system["loop"]
 
-st.title("🎛️ AI DJ System Dashboard")
-
-if "req_query" not in st.session_state:
-    st.session_state.req_query = ""
+st.title("AI DJ System")
+st.caption(
+    "Local music library · deterministic policies and ranking · optional remote AI reasoning"
+)
+st.info(f"Music folder: `{system['music_dir']}` · Indexed tracks: {len(provider.list_songs())}")
 
 with st.sidebar:
-    st.header("Event Configuration")
-    
-    if not orchestrator.is_running:
-        event_id = st.text_input("Event ID", value="event_test_01")
-        vibe = st.text_input("Initial Vibe", value="chill, upbeat")
-        
-        if st.button("Start Event"):
-            config = EventConfig(
-                event_id=event_id,
-                vibe=vibe
-            )
-            asyncio.run_coroutine_threadsafe(orchestrator.start(config), loop)
-            st.rerun()
-    else:
-        st.success("Event is currently running!")
-        if st.button("Stop Event"):
-            asyncio.run_coroutine_threadsafe(orchestrator.stop(), loop)
-            playback_controller.stop()
-            st.rerun()
-            
-
-        st.subheader("System Status")
-        st.write(f"Songs in library: {len(provider._index)}")
-        
-        st.markdown("---")
-        st.subheader("Guest Requests API")
-        st.write("Scan to submit requests:")
+    st.subheader("Guest requests QR")
+    st.caption("Guests open this page to see the live queue and send song requests.")
+    st.link_button("Open guest page", system["guest_portal_url"])
+    st.code(system["guest_portal_url"], language=None)
+    if system["guest_server_ready"]:
         try:
-            import requests
-            import io
-            from PIL import Image
-            # Fetch QR code from local Guest API if running
-            qr_res = requests.get("http://127.0.0.1:8003/qr", timeout=1)
-            if qr_res.status_code == 200:
-                img = Image.open(io.BytesIO(qr_res.content))
-                st.image(img, use_container_width=True)
-            else:
-                st.warning("Guest API QR not available (API might not be running).")
-        except Exception:
-            st.warning("Guest API not running. Run API separately to enable QR requests.")
+            import qrcode
 
-
-if orchestrator.is_running:
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Playback Control")
-        
-        current_song = playback_controller.get_current_song()
-        if current_song:
-            st.info(f"🎶 **Now Playing:** {current_song.title} - {current_song.artist}")
-        elif provider.current_song():
-            s = provider.current_song()
-            st.info(f"🎶 **Now Playing:** {s.get('title')} - {s.get('artist', 'Unknown')}")
+            st.image(qrcode.make(system["guest_portal_url"]).get_image(), width=220)
+        except ImportError:
+            st.warning("QR display dependency is unavailable; guests can open the URL above.")
+        if system["guest_portal_url"].startswith("http://127.0.0.1"):
+            st.warning(
+                "This address only works on this computer. Set GUEST_PUBLIC_URL to a reachable "
+                "HTTPS URL or connect guests to the same LAN and use the displayed LAN address."
+            )
         else:
-            st.info("No song playing.")
-            
-        c_play, c_pause, c_next = st.columns(3)
-        with c_play:
-            if st.button("▶️ Play"):
-                playback_controller.play()
-                st.rerun()
-        with c_pause:
-            if st.button("⏸️ Pause"):
-                playback_controller.pause()
-                st.rerun()
-        with c_next:
-            if st.button("⏭️ Next"):
-                playback_controller.skip()
-                st.rerun()
-                
-        volume = st.slider("Volume", 0, 100, 50)
-        playback_controller.volume(volume)
-            
-    with col2:
-        st.subheader("Interactions")
-        
-        st.write("Submit a Song Request:")
-        req = st.text_input("Search/Request Song", key="req_input")
-        if st.button("Submit Request"):
-            system["event_bus"].publish(BusEvent.REQUEST_RECEIVED, source="dashboard", data={"query": req})
-            st.success(f"Requested: {req}")
-            
-        st.write("Audience Feedback:")
-        feedback = st.selectbox("How is the crowd feeling?", ["Awesome", "Too slow", "Too fast", "Boring"])
-        if st.button("Send Feedback"):
-            system["event_bus"].publish(BusEvent.FEEDBACK_RECEIVED, source="dashboard", data={"feedback": feedback})
-            st.success(f"Feedback sent: {feedback}")
-            
-    st.subheader("Upcoming Queue")
-    
-    items = queue_manager.items
-    if not items:
-        st.write("Queue is empty. Waiting for AI DJ to select songs...")
-        if st.button("Refresh Queue"):
-            st.rerun()
+            st.caption(
+                "For guests on another network, set GUEST_PUBLIC_URL to your secure public "
+                "tunnel URL and expose guest port 8003."
+            )
     else:
-        for i, item in enumerate(items):
-            status = "🔊 Playing" if i == 0 else f"{i}"
-            st.write(f"{status} | **{item.song_title}** by {item.song_artist} (Score: {item.final_score:.2f})")
-            
-else:
-    st.info("Please start the event from the sidebar to activate controls.")
+        st.error(f"Guest request server is unavailable: {system['guest_server_error']}")
+    st.divider()
+    st.header("Event")
+    if not orchestrator.is_running:
+        event_name = st.text_input("Event name", "Local DJ session")
+        event_id = st.text_input("Event ID", "local-event")
+        event_type = st.selectbox("Event type", [value.value for value in EventType])
+        vibe = st.selectbox("Starting vibe", [value.value for value in VibePreset])
+        col_age_min, col_age_max = st.columns(2)
+        min_age = col_age_min.number_input("Minimum age", 0, 100, 18)
+        max_age = col_age_max.number_input("Maximum age", 0, 100, 30)
+        duration = st.number_input("Duration (minutes)", 1, 1440, 240)
+        languages = st.multiselect(
+            "Allowed languages",
+            ["Hindi", "Punjabi", "English", "Spanish", "Other"],
+            default=["Hindi", "Punjabi", "English"],
+        )
+        explicit_allowed = st.checkbox("Allow explicit tracks", value=False)
+        preferred_genres = st.text_input("Preferred genres (comma-separated)")
+        avoided_genres = st.text_input("Avoided genres (comma-separated)")
+        allow_requests = st.checkbox("Allow guest requests", value=True)
+
+        if st.button("Start event", type="primary", use_container_width=True):
+            if max_age < min_age:
+                st.error("Maximum audience age must be at least the minimum age.")
+            elif not provider.list_songs():
+                st.error(
+                    "No playable tracks found. Add MP3/WAV/FLAC/OGG files to "
+                    f"`{system['music_dir']}` and refresh."
+                )
+            else:
+                config = EventConfig(
+                    event_id=event_id,
+                    name=event_name,
+                    event_type=event_type,
+                    min_age=min_age,
+                    max_age=max_age,
+                    duration_minutes=duration,
+                    languages=languages,
+                    starting_vibe=vibe,
+                    explicit_allowed=explicit_allowed,
+                    prefer_genres=[
+                        item.strip() for item in preferred_genres.split(",") if item.strip()
+                    ],
+                    avoid_genres=[
+                        item.strip() for item in avoided_genres.split(",") if item.strip()
+                    ],
+                    allow_requests=allow_requests,
+                )
+                try:
+                    with st.spinner("Starting event and preparing the lookahead queue..."):
+                        _run_coroutine(loop, orchestrator.start(config)).result(timeout=90)
+                    st.rerun()
+                except Exception as error:
+                    st.error(f"Could not start event: {error}")
+    else:
+        state = orchestrator.get_state()
+        st.success(f"Running: {state.event_config.name if state else 'Event'}")
+        if st.button("Stop event", use_container_width=True):
+            try:
+                playback.stop()
+                _run_coroutine(loop, orchestrator.stop()).result(timeout=30)
+                st.rerun()
+            except Exception as error:
+                st.error(f"Could not stop event cleanly: {error}")
+
+    st.divider()
+    if st.button("Refresh local music library", use_container_width=True):
+        try:
+            provider.refresh()
+            system["synced_songs"] = sync_local_library(provider)
+            st.success(f"Indexed {len(provider.list_songs())} local tracks.")
+            st.rerun()
+        except Exception as error:
+            st.error(f"Could not refresh local music: {error}")
+
+state = runtime_state.get_event_state()
+queue_snapshot = runtime_state.get_queue_state() or {"items": []}
+queue_items = queue_snapshot.get("items", [])
+tabs = st.tabs(["Dashboard Console", "Debug Console", "API Console"])
+
+with tabs[0]:
+    if not state:
+        st.info("Create an event from the sidebar to start the DJ.")
+    else:
+        event_config = state.get("event_config", {})
+        metrics = st.columns(4)
+        metrics[0].metric("Event", event_config.get("name", state.get("event_id", "")))
+        metrics[1].metric("Vibe", state.get("current_vibe", ""))
+        metrics[2].metric("Energy", f"{state.get('current_energy', 0.0):.0%}")
+        metrics[3].metric("Progress", f"{state.get('event_progress', 0.0):.0%}")
+
+        current = provider.current_song()
+        if current and playback.is_playing:
+            remaining = playback.get_remaining_time()
+            st.success(
+                f"Now playing: **{current.get('title', 'Unknown')}** — "
+                f"{current.get('artist', 'Unknown Artist')} "
+                f"({remaining / 60:.1f} min remaining)"
+            )
+        elif playback.is_paused and playback.current_song:
+            st.warning(
+                f"Paused: **{playback.current_song.title}** — {playback.current_song.artist}"
+            )
+        else:
+            st.info("Nothing is currently playing.")
+        if not provider.audio_available:
+            st.warning(
+                "No audio output device is available to the machine running this app. "
+                "Playback will fail instead of pretending to play."
+            )
+
+        control_columns = st.columns(5)
+        if control_columns[0].button("Play / Resume"):
+            if not playback.play():
+                st.warning("Playback could not start. Check that the queued track exists locally.")
+            else:
+                st.rerun()
+        if control_columns[1].button("Pause"):
+            if not playback.pause():
+                st.warning("Nothing is currently playing, or the audio device could not pause.")
+            st.rerun()
+        if control_columns[2].button("Skip"):
+            if not playback.skip():
+                st.warning("No current track could be skipped.")
+            st.rerun()
+        if control_columns[3].button("Stop playback"):
+            if not playback.stop():
+                st.error("The audio provider failed to stop playback.")
+            st.rerun()
+        volume = control_columns[4].slider("Volume", 0, 100, 50, key="volume")
+        if not playback.volume(volume):
+            st.caption("Volume control requires an initialized audio output device.")
+
+        st.subheader("Event controls")
+        vibe_col, energy_col = st.columns(2)
+        with vibe_col:
+            requested_vibe = st.selectbox(
+                "Change vibe", [item.value for item in VibePreset], key="vibe_change"
+            )
+            if st.button("Apply vibe"):
+                _run_coroutine(
+                    loop, orchestrator.handle_command({"command": "vibe", "args": [requested_vibe]})
+                ).result(timeout=90)
+                st.rerun()
+        with energy_col:
+            target_energy = st.slider(
+                "Target energy",
+                min_value=0,
+                max_value=100,
+                value=round(state.get("target_energy", 0.5) * 100),
+                key=f"target-energy-{state.get('decision_epoch', 0)}",
+            )
+            if st.button("Apply energy"):
+                _run_coroutine(
+                    loop,
+                    orchestrator.handle_command(
+                        {"command": "energy", "args": [str(target_energy)]}
+                    ),
+                ).result(timeout=90)
+                st.rerun()
+
+        st.subheader("Five-song lookahead")
+        if not queue_items:
+            st.warning("The queue is empty. Add playable tracks and refresh the music library.")
+        else:
+            for item in queue_items[:5]:
+                position = item.get("position", 0)
+                icon = (
+                    "🔊"
+                    if position == 0 and playback.is_playing
+                    else {
+                        "LOCKED": "🔒",
+                        "RECONSIDERING": "🟡",
+                        "FLEXIBLE": "🟢",
+                    }.get(item.get("lock_status"), "🟢")
+                )
+                st.write(
+                    f"{icon} **{position + 1}. {item.get('song_title') or item['song_id']}** — "
+                    f"{item.get('song_artist') or 'Unknown Artist'} · "
+                    f"score {item.get('final_score', 0):.1f} · "
+                    f"{item.get('lock_status', 'FLEXIBLE')}"
+                )
+
+        request_column, feedback_column = st.columns(2)
+        with request_column:
+            st.subheader("Guest request")
+            requested_song = st.text_input("Song title or title + artist", key="song-request")
+            requester = st.text_input("Guest name (optional)", key="requester")
+            if st.button("Submit request", disabled=not event_config.get("allow_requests", True)):
+                if not requested_song.strip():
+                    st.error("Enter a song title or search phrase.")
+                else:
+                    request = SongRequest(
+                        requested_song_query=requested_song.strip(),
+                        requester=requester.strip() or "dashboard",
+                    )
+                    event_bus.publish(
+                        BusEvent.REQUEST_RECEIVED,
+                        source="streamlit",
+                        data={"request": request.model_dump(mode="json")},
+                    )
+                    st.success(f"Request received: {requested_song.strip()}")
+
+        with feedback_column:
+            st.subheader("Crowd feedback")
+            if state.get("current_song_id"):
+                overall = st.slider("Overall", 1, 10, 8, key="feedback-overall")
+                energy = st.slider("Energy", 1, 10, 8, key="feedback-energy")
+                song_choice = st.slider("Song choice", 1, 10, 8, key="feedback-song")
+                transition = st.slider("Transition", 1, 10, 8, key="feedback-transition")
+                vibe_rating = st.slider("Vibe", 1, 10, 8, key="feedback-vibe")
+                if st.button("Send feedback"):
+                    feedback = SongFeedback(
+                        event_id=state["event_id"],
+                        song_id=state["current_song_id"],
+                        overall_rating=overall,
+                        energy_rating=energy,
+                        song_choice_rating=song_choice,
+                        transition_rating=transition,
+                        vibe_rating=vibe_rating,
+                        current_vibe=state.get("vibe_vector"),
+                        target_energy=state.get("target_energy"),
+                        current_energy=state.get("current_energy"),
+                        current_song_id=state.get("current_song_id"),
+                        previous_song_ids=state.get("recent_history", []),
+                        next_song_ids=[
+                            item.get("song_id")
+                            for item in queue_items
+                            if item.get("song_id") != state.get("current_song_id")
+                        ],
+                        event_type=event_config.get("event_type"),
+                        audience_age_range=[
+                            event_config.get("min_age", 0),
+                            event_config.get("max_age", 100),
+                        ],
+                        event_progress=state.get("event_progress"),
+                        decision_epoch=state.get("decision_epoch", 0),
+                    )
+                    event_bus.publish(
+                        BusEvent.FEEDBACK_RECEIVED,
+                        source="streamlit",
+                        data={"feedback": feedback.model_dump(mode="json")},
+                    )
+                    st.success("Feedback recorded.")
+            else:
+                st.caption("Start playback before submitting track feedback.")
+
+with tabs[1]:
+    st.subheader("Runtime state and decision history")
+    st.json(state or {})
+    messages = event_bus.get_history(limit=100)
+    for message in reversed(messages):
+        if message.event_type in {
+            BusEvent.POLICY_VIOLATION,
+            BusEvent.SCORING_COMPLETE,
+            BusEvent.AGENT_DECISION,
+            BusEvent.EVENT_STATE_UPDATED,
+            BusEvent.ERROR,
+            BusEvent.WARNING,
+        }:
+            st.write(
+                f"{message.timestamp.isoformat()} · {message.event_type.value} · "
+                f"{message.source}: {message.data}"
+            )
+
+with tabs[2]:
+    st.subheader("AI/API activity")
+    messages = event_bus.get_history(limit=100)
+    if not messages:
+        st.caption("No API or model events have been recorded yet.")
+    for message in reversed(messages):
+        if message.event_type in {
+            BusEvent.AI_REQUEST_SENT,
+            BusEvent.AI_RESPONSE_RECEIVED,
+            BusEvent.AI_UNAVAILABLE,
+            BusEvent.HTTP_REQUEST,
+            BusEvent.HTTP_RESPONSE,
+            BusEvent.RETRY_ATTEMPT,
+            BusEvent.RATE_LIMIT_EXCEEDED,
+            BusEvent.CONNECTION_STATE_CHANGED,
+            BusEvent.CACHE_HIT,
+            BusEvent.CACHE_MISS,
+        }:
+            st.write(
+                f"{message.timestamp.isoformat()} · {message.event_type.value} · "
+                f"{message.source}: {message.data}"
+            )
+
+st.caption("Use the page refresh control to view playback and runtime updates.")

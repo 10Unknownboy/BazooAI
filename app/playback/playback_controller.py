@@ -2,118 +2,174 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Optional
 
+from app.event.event_bus import BusEvent, get_event_bus
 from app.models.song import Song
+from app.providers.base import MusicProvider
 from app.queue.queue_manager import QueueManager
-from app.event.event_bus import get_event_bus, BusEvent
 
 logger = logging.getLogger(__name__)
 
 
-class MusicProvider:
-    """Mock interface for the music provider (e.g. Spotify, local player)."""
-    def play(self): pass
-    def pause(self): pass
-    def stop(self): pass
-    def volume(self, value): pass
-    def seek(self, seconds): pass
-
-
 class PlaybackController:
-    """Playback coordination layer bridging QueueManager and MusicProvider."""
-    
+    """Coordinate provider playback with the orchestrator-owned queue."""
+
     def __init__(self, queue_manager: QueueManager, provider: MusicProvider):
         self.queue = queue_manager
         self.provider = provider
         self.event_bus = get_event_bus()
-        self.current_song: Optional[Song] = None
+        self.current_song: Song | None = None
+        self.previous_item = None
         self.is_playing = False
-        
-        # Start a background monitoring thread
-        self._monitor_thread = threading.Thread(target=self._monitor_playback, daemon=True)
+        self._stop_monitor = threading.Event()
+        self._monitor_thread = threading.Thread(
+            target=self._monitor_playback,
+            name="playback-monitor",
+            daemon=True,
+        )
         self._monitor_thread.start()
 
-    def _monitor_playback(self):
-        import time
-        while True:
-            time.sleep(1)
-            # If we think we are playing, but the provider says it stopped
-            # (and not because we explicitly paused it)
-            if self.is_playing and not self.provider.is_playing() and not getattr(self.provider, "_paused", False):
-                logger.info("PlaybackController monitor detected song end.")
+    def _monitor_playback(self) -> None:
+        while not self._stop_monitor.wait(0.25):
+            if (
+                self.is_playing
+                and not self.provider.is_playing()
+                and not getattr(self.provider, "_paused", False)
+            ):
+                logger.info("Playback monitor detected song end")
                 self.on_song_end()
-                self.play()  # Automatically start next song
-        
-    def play(self):
-        """Start or resume playback."""
+                self.play()
+
+    def play(self) -> bool:
+        """Start the current queue item or resume a paused track."""
         if self.is_playing:
-            return
-            
-        # If we have a current item and provider is paused, try resuming
-        if getattr(self.provider, "_paused", False) and self.current_song:
-            self.provider.resume()
+            return True
+
+        if self.current_song and getattr(self.provider, "_paused", False):
+            if not self.provider.resume():
+                return False
             self.is_playing = True
-            self.event_bus.publish(BusEvent.PLAYBACK_RESUMED, source="playback", data={})
-            return
+            self.event_bus.publish(BusEvent.PLAYBACK_RESUMED, source="playback")
+            return True
 
         item = self.queue.get_current()
-        if item:
-            # In a full system, we'd fetch the Song object.
-            # We'll just create a dummy one for now if not fetched.
-            self.current_song = Song(id=item.song_id, title=item.song_title, artist=item.song_artist, duration=210.0)
-            
-            # play() takes a song_id
-            self.provider.play(item.song_id)
-            self.is_playing = True
-            self.event_bus.publish(BusEvent.SONG_STARTED, source="playback", data={"song_id": item.song_id})
-            
-    def pause(self):
-        """Pause playback."""
-        self.provider.pause()
+        if item is None:
+            logger.warning("Cannot play: queue is empty")
+            return False
+        if not self.provider.play(item.song_id):
+            logger.error("Playback provider failed to start song %s", item.song_id)
+            self.event_bus.publish(
+                BusEvent.ERROR,
+                source="playback",
+                data={
+                    "message": "Playback provider failed to start the queued song",
+                    "song_id": item.song_id,
+                },
+            )
+            return False
+
+        provider_song = self.provider.get_song(item.song_id) or {}
+        self.current_song = Song(
+            song_id=item.song_id,
+            title=item.song_title or provider_song.get("title") or "Unknown Title",
+            artist=item.song_artist or provider_song.get("artist") or "Unknown Artist",
+            duration=provider_song.get("duration") or 210.0,
+            bpm=item.song_bpm,
+            energy=item.song_energy,
+        )
+        self.is_playing = True
+        self.event_bus.publish(
+            BusEvent.SONG_STARTED,
+            source="playback",
+            data={"song_id": item.song_id},
+        )
+        return True
+
+    def pause(self) -> bool:
+        if not self.provider.pause():
+            return False
         self.is_playing = False
-        self.event_bus.publish(BusEvent.PLAYBACK_PAUSED, source="playback", data={})
-        
-    def resume(self):
-        """Resume playback."""
-        self.play()
-        self.event_bus.publish(BusEvent.PLAYBACK_RESUMED, source="playback", data={})
-        
-    def stop(self):
-        """Stop playback."""
-        self.provider.stop()
+        self.event_bus.publish(BusEvent.PLAYBACK_PAUSED, source="playback")
+        return True
+
+    def resume(self) -> bool:
+        return self.play()
+
+    def stop(self) -> bool:
+        stopped = self.provider.stop()
         self.is_playing = False
-        self.event_bus.publish(BusEvent.PLAYBACK_STOPPED, source="playback", data={})
-        
-    def skip(self):
-        """Skip to next song."""
+        self.current_song = None
+        self.event_bus.publish(BusEvent.PLAYBACK_STOPPED, source="playback")
+        return stopped
+
+    def skip(self) -> bool:
+        if self.current_song is None:
+            return self.play()
+        if not self.provider.stop():
+            logger.error("Playback provider failed to stop the current song for skip")
+            return False
         self.on_song_end()
-        self.play()
-        
-    def previous(self):
-        """Go to previous song (not fully implemented in spec)."""
-        pass
-        
-    def volume(self, value: int):
-        """Set volume level."""
-        self.provider.volume(value)
-        
-    def seek(self, seconds: float):
-        """Seek to a position in current song."""
-        self.provider.seek(seconds)
-        
-    def on_song_end(self):
-        """Advances queue when song ends."""
-        if self.current_song:
-            self.event_bus.publish(BusEvent.SONG_ENDED, source="playback", data={"song_id": self.current_song.song_id})
-        self.queue.advance()
+        return self.play()
+
+    def previous(self) -> bool:
+        previous = self.previous_item
+        if previous is None:
+            return False
+        self.provider.stop()
+        if self.current_song is not None:
+            self.queue.add_song(
+                song_id=self.current_song.song_id,
+                score=0.0,
+                song_title=self.current_song.title,
+                song_artist=self.current_song.artist,
+                position=1,
+            )
+        self.queue.add_song(
+            song_id=previous.song_id,
+            score=previous.final_score,
+            song_title=previous.song_title or "",
+            song_artist=previous.song_artist or "",
+            position=0,
+            decision_epoch=previous.decision_epoch,
+        )
         self.current_song = None
         self.is_playing = False
-        
-    def get_current_song(self) -> Optional[Song]:
-        """Get the currently playing song."""
+        return self.play()
+
+    def volume(self, value: int) -> bool:
+        if not 0 <= value <= 100:
+            raise ValueError("Volume must be between 0 and 100")
+        return self.provider.volume(value)
+
+    def seek(self, seconds: float) -> bool:
+        if seconds < 0:
+            raise ValueError("Seek position cannot be negative")
+        return self.provider.seek(seconds)
+
+    def on_song_end(self) -> None:
+        """Notify the orchestrator; it alone advances the shared queue."""
+        if self.current_song:
+            finished = self.current_song
+            self.current_song = None
+            self.is_playing = False
+            self.previous_item = self.queue.get_current()
+            self.event_bus.publish(
+                BusEvent.SONG_ENDED,
+                source="playback",
+                data={"song_id": finished.song_id},
+            )
+
+    def get_current_song(self) -> Song | None:
         return self.current_song
-        
+
+    @property
+    def is_paused(self) -> bool:
+        return bool(getattr(self.provider, "_paused", False))
+
     def get_remaining_time(self) -> float:
-        """Get remaining time in current song."""
-        return 0.0
+        return self.provider.get_remaining_time()
+
+    def close(self) -> None:
+        self.stop()
+        self._stop_monitor.set()
+        self._monitor_thread.join(timeout=1.0)

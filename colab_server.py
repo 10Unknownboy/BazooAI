@@ -1,4 +1,4 @@
-!rm -rf /content/BazooAI
+# Preserve any existing checkout and user files.
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURATION — edit these before running
@@ -26,15 +26,15 @@ HF_DTYPE = "float16"  # "float16" or "bfloat16"
 # Get a free key at https://openrouter.ai/keys
 # Free models: "mistralai/mistral-7b-instruct:free",
 #              "meta-llama/llama-3.1-8b-instruct:free"
-OPENROUTER_API_KEY = "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"  # paste your key here or use Colab Secrets
+OPENROUTER_API_KEY = ""  # Supply via Colab Secrets, never in source code
 OPENROUTER_MODEL = "openrouter/free"
 
 # --- ngrok (to expose the server to your local machine) ---
 # Get a free token at https://dashboard.ngrok.com/get-started/your-authtoken
-NGROK_AUTH_TOKEN = "2tqBfHv7S8tZis37fWjCpjqxk7D_2Xf4LsASPoUweghG6Dptd"  # paste your token here or use Colab Secrets
+NGROK_AUTH_TOKEN = ""  # Supply via Colab Secrets, never in source code
 
 # --- HuggingFace token (only needed for gated models like Llama) ---
-HF_TOKEN = "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"  # paste your token here or use Colab Secrets
+HF_TOKEN = ""  # Supply via Colab Secrets, never in source code
 
 # ═══════════════════════════════════════════════════════════════
 # Load from Colab Secrets if available (overrides above)

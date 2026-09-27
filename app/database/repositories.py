@@ -5,39 +5,37 @@ No raw SQL in application code. All queries go through repositories.
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
-from sqlalchemy import select, update, delete, func, and_
+from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.database.engine import (
-    get_session,
-    SongTable,
+    AgentDecisionTable,
+    APICacheTable,
     AudioFeaturesTable,
-    LyricsFeaturesTable,
+    EventFeedbackTable,
     EventTable,
+    FeedbackTable,
+    LearnedPreferenceTable,
+    LyricsFeaturesTable,
     PlayHistoryTable,
     RequestTable,
-    FeedbackTable,
-    TransitionFeedbackTable,
-    EventFeedbackTable,
-    AgentDecisionTable,
-    ScoringSnapshotTable,
     RewardTable,
-    LearnedPreferenceTable,
-    APICacheTable,
+    ScoringSnapshotTable,
+    SongTable,
+    TransitionFeedbackTable,
+    get_session,
 )
-from app.models.song import Song, AudioFeatures, LyricsFeatures
-from app.models.event import EventConfig, EventState
-from app.models.feedback import SongFeedback, TransitionFeedback, EventFeedback, RewardRecord
 from app.models.agent import AgentDecision, ScoringSnapshot
 from app.models.cache import CacheEntry
+from app.models.event import EventConfig, EventState
+from app.models.feedback import EventFeedback, RewardRecord, SongFeedback, TransitionFeedback
+from app.models.song import AudioFeatures, LyricsFeatures, Song
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -56,19 +54,21 @@ def get_repository(name: str, session: Session | None = None):
     """
     if not _REPO_MAP:
         # Lazy initialization to avoid circular import issues
-        _REPO_MAP.update({
-            "song": SongRepository,
-            "audio_features": AudioFeaturesRepository,
-            "lyrics_features": LyricsFeaturesRepository,
-            "event": EventRepository,
-            "play_history": PlayHistoryRepository,
-            "feedback": FeedbackRepository,
-            "agent_decision": AgentDecisionRepository,
-            "reward": RewardRepository,
-            "learned_preference": LearnedPreferenceRepository,
-            "cache": CacheRepository,
-            "request": RequestRepository,
-        })
+        _REPO_MAP.update(
+            {
+                "song": SongRepository,
+                "audio_features": AudioFeaturesRepository,
+                "lyrics_features": LyricsFeaturesRepository,
+                "event": EventRepository,
+                "play_history": PlayHistoryRepository,
+                "feedback": FeedbackRepository,
+                "agent_decision": AgentDecisionRepository,
+                "reward": RewardRepository,
+                "learned_preference": LearnedPreferenceRepository,
+                "cache": CacheRepository,
+                "request": RequestRepository,
+            }
+        )
     repo_class = _REPO_MAP.get(name)
     if repo_class is None:
         raise ValueError(f"Unknown repository: {name}. Available: {list(_REPO_MAP.keys())}")
@@ -111,34 +111,44 @@ class SongRepository:
 
     def search(self, query: str, limit: int = 50) -> list[Song]:
         q = query.lower()
-        rows = self.session.execute(
-            select(SongTable).where(
-                (func.lower(SongTable.title).contains(q))
-                | (func.lower(SongTable.artist).contains(q))
-            ).limit(limit)
-        ).scalars().all()
+        rows = (
+            self.session.execute(
+                select(SongTable)
+                .where(
+                    (func.lower(SongTable.title).contains(q))
+                    | (func.lower(SongTable.artist).contains(q))
+                )
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
         return [self._row_to_model(r) for r in rows]
 
     def get_all(self, limit: int = 1000) -> list[Song]:
-        rows = self.session.execute(
-            select(SongTable).limit(limit)
-        ).scalars().all()
+        rows = self.session.execute(select(SongTable).limit(limit)).scalars().all()
         return [self._row_to_model(r) for r in rows]
 
     def get_by_language(self, language: str, limit: int = 200) -> list[Song]:
-        rows = self.session.execute(
-            select(SongTable).where(
-                func.lower(SongTable.language) == language.lower()
-            ).limit(limit)
-        ).scalars().all()
+        rows = (
+            self.session.execute(
+                select(SongTable)
+                .where(func.lower(SongTable.language) == language.lower())
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
         return [self._row_to_model(r) for r in rows]
 
     def get_by_genre(self, genre: str, limit: int = 200) -> list[Song]:
-        rows = self.session.execute(
-            select(SongTable).where(
-                func.lower(SongTable.genre) == genre.lower()
-            ).limit(limit)
-        ).scalars().all()
+        rows = (
+            self.session.execute(
+                select(SongTable).where(func.lower(SongTable.genre) == genre.lower()).limit(limit)
+            )
+            .scalars()
+            .all()
+        )
         return [self._row_to_model(r) for r in rows]
 
     def get_candidates(
@@ -176,9 +186,7 @@ class SongRepository:
                 setattr(existing, key, value)
             existing.last_updated = _utc_now()
         else:
-            row = SongTable(**song.model_dump(
-                exclude={"audio_features", "lyrics_features"}
-            ))
+            row = SongTable(**song.model_dump(exclude={"audio_features", "lyrics_features"}))
             self.session.add(row)
         self.session.commit()
 
@@ -247,16 +255,30 @@ class AudioFeaturesRepository:
         if row is None:
             return None
         return AudioFeatures(
-            song_id=row.song_id, bpm=row.bpm, tempo=row.tempo, key=row.key,
-            loudness=row.loudness, energy=row.energy, danceability=row.danceability,
-            valence=row.valence, acousticness=row.acousticness,
-            instrumentalness=row.instrumentalness, speechiness=row.speechiness,
-            spectral_centroid=row.spectral_centroid, spectral_bandwidth=row.spectral_bandwidth,
-            spectral_rolloff=row.spectral_rolloff, zero_crossing_rate=row.zero_crossing_rate,
-            mfcc_mean=row.mfcc_mean, chroma_mean=row.chroma_mean, onset_rate=row.onset_rate,
-            duration=row.duration, file_hash=row.file_hash,
-            analyzer_version=row.analyzer_version, analysis_version=row.analysis_version or 1,
-            analysis_status=row.analysis_status or "PENDING", analyzed_at=row.analyzed_at,
+            song_id=row.song_id,
+            bpm=row.bpm,
+            tempo=row.tempo,
+            key=row.key,
+            loudness=row.loudness,
+            energy=row.energy,
+            danceability=row.danceability,
+            valence=row.valence,
+            acousticness=row.acousticness,
+            instrumentalness=row.instrumentalness,
+            speechiness=row.speechiness,
+            spectral_centroid=row.spectral_centroid,
+            spectral_bandwidth=row.spectral_bandwidth,
+            spectral_rolloff=row.spectral_rolloff,
+            zero_crossing_rate=row.zero_crossing_rate,
+            mfcc_mean=row.mfcc_mean,
+            chroma_mean=row.chroma_mean,
+            onset_rate=row.onset_rate,
+            duration=row.duration,
+            file_hash=row.file_hash,
+            analyzer_version=row.analyzer_version,
+            analysis_version=row.analysis_version or 1,
+            analysis_status=row.analysis_status or "PENDING",
+            analyzed_at=row.analyzed_at,
             audio_embedding=row.audio_embedding,
         )
 
@@ -310,21 +332,35 @@ class LyricsFeaturesRepository:
         if row is None:
             return None
         return LyricsFeatures(
-            song_id=row.song_id, language=row.language, themes=row.themes or [],
-            sentiment=row.sentiment, mood=row.mood, romance=row.romance or 0.0,
-            sadness=row.sadness or 0.0, celebration=row.celebration or 0.0,
-            aggression=row.aggression or 0.0, sexual_content=row.sexual_content or 0.0,
-            explicitness=row.explicitness or 0.0, violence=row.violence or 0.0,
-            drugs=row.drugs or 0.0, breakup=row.breakup or 0.0,
-            nostalgia=row.nostalgia or 0.0, family_friendly=row.family_friendly,
+            song_id=row.song_id,
+            language=row.language,
+            themes=row.themes or [],
+            sentiment=row.sentiment,
+            mood=row.mood,
+            romance=row.romance or 0.0,
+            sadness=row.sadness or 0.0,
+            celebration=row.celebration or 0.0,
+            aggression=row.aggression or 0.0,
+            sexual_content=row.sexual_content or 0.0,
+            explicitness=row.explicitness or 0.0,
+            violence=row.violence or 0.0,
+            drugs=row.drugs or 0.0,
+            breakup=row.breakup or 0.0,
+            nostalgia=row.nostalgia or 0.0,
+            family_friendly=row.family_friendly,
             event_suitability=row.event_suitability or {},
-            source=row.source, content_hash=row.content_hash,
-            analysis_model=row.analysis_model, analysis_version=row.analysis_version or 1,
-            analysis_status=row.analysis_status or "PENDING", analyzed_at=row.analyzed_at,
+            source=row.source,
+            content_hash=row.content_hash,
+            analysis_model=row.analysis_model,
+            analysis_version=row.analysis_version or 1,
+            analysis_status=row.analysis_status or "PENDING",
+            analyzed_at=row.analyzed_at,
             lyrics_embedding=row.lyrics_embedding,
         )
 
-    def is_analyzed(self, song_id: str, analysis_model: str | None = None, analysis_version: int | None = None) -> bool:
+    def is_analyzed(
+        self, song_id: str, analysis_model: str | None = None, analysis_version: int | None = None
+    ) -> bool:
         row = self.session.execute(
             select(LyricsFeaturesTable).where(
                 and_(
@@ -392,7 +428,9 @@ class EventRepository:
 
     def save_state(self, event_id: str, state: EventState) -> None:
         self.session.execute(
-            update(EventTable).where(EventTable.event_id == event_id).values(
+            update(EventTable)
+            .where(EventTable.event_id == event_id)
+            .values(
                 state_json=state.model_dump(mode="json"),
                 updated_at=_utc_now(),
             )
@@ -411,9 +449,10 @@ class EventRepository:
 
     def get_active_event(self) -> tuple[EventConfig, EventState] | None:
         row = self.session.execute(
-            select(EventTable).where(EventTable.is_active == True).order_by(
-                EventTable.updated_at.desc()
-            ).limit(1)
+            select(EventTable)
+            .where(EventTable.is_active == True)
+            .order_by(EventTable.updated_at.desc())
+            .limit(1)
         ).scalar_one_or_none()
         if row is None:
             return None
@@ -441,25 +480,32 @@ class PlayHistoryRepository:
         self.session.commit()
 
     def get_event_history(self, event_id: str) -> list[dict]:
-        rows = self.session.execute(
-            select(PlayHistoryTable).where(
-                PlayHistoryTable.event_id == event_id
-            ).order_by(PlayHistoryTable.position)
-        ).scalars().all()
+        rows = (
+            self.session.execute(
+                select(PlayHistoryTable)
+                .where(PlayHistoryTable.event_id == event_id)
+                .order_by(PlayHistoryTable.position)
+            )
+            .scalars()
+            .all()
+        )
         return [
-            {c.name: getattr(r, c.name) for c in PlayHistoryTable.__table__.columns}
-            for r in rows
+            {c.name: getattr(r, c.name) for c in PlayHistoryTable.__table__.columns} for r in rows
         ]
 
     def get_recent(self, event_id: str, limit: int = 20) -> list[dict]:
-        rows = self.session.execute(
-            select(PlayHistoryTable).where(
-                PlayHistoryTable.event_id == event_id
-            ).order_by(PlayHistoryTable.position.desc()).limit(limit)
-        ).scalars().all()
+        rows = (
+            self.session.execute(
+                select(PlayHistoryTable)
+                .where(PlayHistoryTable.event_id == event_id)
+                .order_by(PlayHistoryTable.position.desc())
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
         return [
-            {c.name: getattr(r, c.name) for c in PlayHistoryTable.__table__.columns}
-            for r in rows
+            {c.name: getattr(r, c.name) for c in PlayHistoryTable.__table__.columns} for r in rows
         ]
 
 
@@ -530,20 +576,17 @@ class FeedbackRepository:
 
     def get_song_feedback_avg(self, event_id: str) -> float | None:
         result = self.session.execute(
-            select(func.avg(FeedbackTable.overall_rating)).where(
-                FeedbackTable.event_id == event_id
-            )
+            select(func.avg(FeedbackTable.overall_rating)).where(FeedbackTable.event_id == event_id)
         ).scalar()
         return result
 
     def get_song_historical_feedback(self, song_id: str) -> list[dict]:
-        rows = self.session.execute(
-            select(FeedbackTable).where(FeedbackTable.song_id == song_id)
-        ).scalars().all()
-        return [
-            {c.name: getattr(r, c.name) for c in FeedbackTable.__table__.columns}
-            for r in rows
-        ]
+        rows = (
+            self.session.execute(select(FeedbackTable).where(FeedbackTable.song_id == song_id))
+            .scalars()
+            .all()
+        )
+        return [{c.name: getattr(r, c.name) for c in FeedbackTable.__table__.columns} for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -571,12 +614,15 @@ class AgentDecisionRepository:
 
     def get_latest_snapshot(self, event_id: str, song_id: str) -> dict | None:
         row = self.session.execute(
-            select(ScoringSnapshotTable).where(
+            select(ScoringSnapshotTable)
+            .where(
                 and_(
                     ScoringSnapshotTable.event_id == event_id,
                     ScoringSnapshotTable.song_id == song_id,
                 )
-            ).order_by(ScoringSnapshotTable.decision_epoch.desc()).limit(1)
+            )
+            .order_by(ScoringSnapshotTable.decision_epoch.desc())
+            .limit(1)
         ).scalar_one_or_none()
         if row is None:
             return None
@@ -601,20 +647,41 @@ class RewardRepository:
             reward_id=record.reward_id,
             event_id=record.event_id,
             decision_epoch=record.decision_epoch,
-            state_json=record.model_dump(mode="json", include={
-                "state_vibe", "state_energy", "state_event_type",
-                "state_event_progress", "state_recent_genres",
-                "state_recent_artists", "state_audience_age",
-            }),
+            state_json=record.model_dump(
+                mode="json",
+                include={
+                    "state_vibe",
+                    "state_energy",
+                    "state_event_type",
+                    "state_event_progress",
+                    "state_recent_genres",
+                    "state_recent_artists",
+                    "state_audience_age",
+                },
+            ),
             action_song_id=record.action_song_id,
             action_score=record.action_score,
-            action_components=record.action_score_components.model_dump() if record.action_score_components else {},
+            action_components=record.action_score_components.model_dump()
+            if record.action_score_components
+            else {},
             reward=record.reward,
             raw_feedback=record.raw_feedback,
-            next_state_json=record.model_dump(mode="json", include={
-                "next_state_vibe", "next_state_energy", "next_state_event_progress",
-            }),
-            context_json=record.context,
+            next_state_json=record.model_dump(
+                mode="json",
+                include={
+                    "next_state_vibe",
+                    "next_state_energy",
+                    "next_state_event_progress",
+                },
+            ),
+            context_json={
+                **record.context,
+                "penalty_components": (
+                    record.action_penalty_components.model_dump()
+                    if record.action_penalty_components
+                    else {}
+                ),
+            },
         )
         self.session.add(row)
         self.session.commit()
@@ -633,7 +700,9 @@ class LearnedPreferenceRepository:
             self._session = get_session()
         return self._session
 
-    def get_preference(self, event_type: str, context_key: str, preference_type: str, preference_value: str) -> dict | None:
+    def get_preference(
+        self, event_type: str, context_key: str, preference_type: str, preference_value: str
+    ) -> dict | None:
         row = self.session.execute(
             select(LearnedPreferenceTable).where(
                 and_(
@@ -697,9 +766,7 @@ class LearnedPreferenceRepository:
         self.session.commit()
 
     def get_adjustments(self, event_type: str, context_key: str | None = None) -> list[dict]:
-        stmt = select(LearnedPreferenceTable).where(
-            LearnedPreferenceTable.event_type == event_type
-        )
+        stmt = select(LearnedPreferenceTable).where(LearnedPreferenceTable.event_type == event_type)
         if context_key:
             stmt = stmt.where(LearnedPreferenceTable.context_key == context_key)
         rows = self.session.execute(stmt).scalars().all()
@@ -842,15 +909,28 @@ class RequestRepository:
         return {c.name: getattr(row, c.name) for c in RequestTable.__table__.columns}
 
     def get_pending(self, event_id: str) -> list[dict]:
-        rows = self.session.execute(
-            select(RequestTable).where(
-                and_(
-                    RequestTable.event_id == event_id,
-                    RequestTable.status.in_(["RECEIVED", "VALIDATING", "ANALYZING", "DECISION", "QUEUED", "DEFERRED", "BRIDGING"]),
+        rows = (
+            self.session.execute(
+                select(RequestTable)
+                .where(
+                    and_(
+                        RequestTable.event_id == event_id,
+                        RequestTable.status.in_(
+                            [
+                                "RECEIVED",
+                                "VALIDATING",
+                                "ANALYZING",
+                                "DECISION",
+                                "QUEUED",
+                                "DEFERRED",
+                                "BRIDGING",
+                            ]
+                        ),
+                    )
                 )
-            ).order_by(RequestTable.created_at)
-        ).scalars().all()
-        return [
-            {c.name: getattr(r, c.name) for c in RequestTable.__table__.columns}
-            for r in rows
-        ]
+                .order_by(RequestTable.created_at)
+            )
+            .scalars()
+            .all()
+        )
+        return [{c.name: getattr(r, c.name) for c in RequestTable.__table__.columns} for r in rows]

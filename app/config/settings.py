@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from functools import lru_cache
+from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -70,10 +69,10 @@ class AppSettings(BaseModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
     log_level: str = Field(default="INFO")
     log_dir: Path = Field(default=LOG_DIR)
-    local_music_dir: Path | None = Field(default=None)
+    local_music_dir: Path = Field(default=PROJECT_ROOT / "music")
 
     @classmethod
-    def from_env(cls) -> "AppSettings":
+    def from_env(cls) -> AppSettings:
         """Build settings from environment variables."""
         return cls(
             ai_model=AIModelSettings(
@@ -105,8 +104,17 @@ class AppSettings(BaseModel):
             ),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             log_dir=Path(os.getenv("LOG_DIR", str(LOG_DIR))),
-            local_music_dir=Path(os.getenv("LOCAL_MUSIC_DIR")) if os.getenv("LOCAL_MUSIC_DIR") else None,
+            local_music_dir=cls._local_music_dir_from_env(),
         )
+
+    @staticmethod
+    def _local_music_dir_from_env() -> Path:
+        """Resolve relative music paths from the project root, not the shell cwd."""
+        configured_path = os.getenv("LOCAL_MUSIC_DIR", "./music").strip() or "./music"
+        music_dir = Path(configured_path).expanduser()
+        if not music_dir.is_absolute():
+            music_dir = PROJECT_ROOT / music_dir
+        return music_dir.resolve()
 
 
 @lru_cache(maxsize=1)
@@ -123,7 +131,7 @@ def load_yaml_config(filename: str) -> dict:
     path = CONFIG_DIR / filename
     if not path.exists():
         return {}
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
@@ -142,6 +150,6 @@ def load_event_config(path: str | Path | None = None) -> dict:
     if path:
         p = Path(path)
         if p.exists():
-            with open(p, "r", encoding="utf-8") as f:
+            with open(p, encoding="utf-8") as f:
                 return yaml.safe_load(f) or {}
     return load_yaml_config("event_example.yaml")

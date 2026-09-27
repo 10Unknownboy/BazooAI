@@ -1,38 +1,39 @@
 from __future__ import annotations
 
-import logging
-from typing import List, Optional
+from pathlib import Path
 
-from app.models.song import Song
-from app.models.event import EventState
+from app.config.settings import load_scoring_config
 from app.database.repositories import get_repository
-
-logger = logging.getLogger(__name__)
+from app.models.event import EventState
+from app.models.song import Song
 
 
 class CandidateGenerator:
-    """Explicit candidate generation stage."""
-    
+    """Generate a bounded candidate pool from the local music catalog."""
+
     def __init__(self):
         self.song_repo = get_repository("song")
-        self.initial_pool_size = 100
-        
-    def get_candidates(self, event_state: EventState, exclude_ids: Optional[List[str]] = None, limit: int = 50) -> List[Song]:
-        """Fetch candidates filtered by language, genre preferences and excluding recently played."""
-        try:
-            exclude = set(exclude_ids) if exclude_ids else set()
-            
-            # Fetch candidates from the database (simulated with repo)
-            all_songs = self.song_repo.get_all(limit=self.initial_pool_size)
-            
-            candidates = []
-            for song in all_songs:
-                if song.song_id in exclude:
-                    continue
-                # Further filtering logic based on event_state could go here
-                candidates.append(song)
-                
-            return candidates[:limit]
-        except Exception as e:
-            logger.error(f"Error generating candidates: {e}")
-            return []
+        config = load_scoring_config().get("candidates", {})
+        self.initial_pool_size = int(config.get("initial_pool_size", 200))
+
+    def get_candidates(
+        self,
+        event_state: EventState,
+        exclude_ids: list[str] | None = None,
+        limit: int = 50,
+    ) -> list[Song]:
+        """Exclude queued/recent tracks, then return a popularity-ordered shortlist."""
+        exclude = set(exclude_ids or ())
+        songs = self.song_repo.get_all(limit=self.initial_pool_size)
+        available = [
+            song
+            for song in songs
+            if song.song_id not in exclude
+            and not (
+                song.source_provider == "local_file"
+                and song.file_path
+                and not Path(song.file_path).is_file()
+            )
+        ]
+        available.sort(key=lambda song: song.popularity, reverse=True)
+        return available[:limit]

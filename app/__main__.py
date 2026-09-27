@@ -4,10 +4,59 @@ import threading
 import subprocess
 import time
 import os
+from pathlib import Path
 
 from app.console.logging_setup import setup_logging
+from app.config.settings import load_event_config
+from app.models.event import EventConfig
 
-def start_orchestrator(dry_run: bool = False, simulate: bool = False) -> None:
+
+def event_config_from_file(path: str | Path) -> EventConfig:
+    """Convert the documented YAML event format into the runtime event model."""
+    raw = load_event_config(path)
+    event = raw.get("event", {})
+    audience = raw.get("audience", {})
+    music = raw.get("music", {})
+    requests = raw.get("requests", {})
+    learning = raw.get("learning", {})
+    audio = raw.get("audio", {})
+    simulation = raw.get("simulation", {})
+    return EventConfig(
+        name=event.get("name", "Untitled Event"),
+        event_type=event.get("type", "custom"),
+        description=event.get("description", ""),
+        min_age=audience.get("min_age", 0),
+        max_age=audience.get("max_age", 100),
+        expected_count=audience.get("expected_count"),
+        duration_minutes=raw.get("duration_minutes", 240),
+        languages=raw.get("languages", ["Hindi", "English"]),
+        region=raw.get("region"),
+        starting_vibe=music.get("starting_vibe", "chill"),
+        target_vibe=music.get("target_vibe"),
+        explicit_allowed=music.get("explicit_allowed", False),
+        prefer_genres=music.get("prefer_genres", []),
+        avoid_genres=music.get("avoid_genres", []),
+        prefer_artists=music.get("prefer_artists", []),
+        avoid_artists=music.get("avoid_artists", []),
+        energy_curve=raw.get("energy_curve", []),
+        allow_requests=requests.get("allow_requests", True),
+        request_mode=requests.get("mode", "adaptive"),
+        requests_affect_vibe=requests.get("affect_vibe", True),
+        learning_enabled=learning.get("enabled", True),
+        feedback_prompt=learning.get("feedback_prompt", True),
+        lookahead_songs=audio.get("lookahead_songs", 5),
+        analyze_on_add=audio.get("analyze_on_add", True),
+        simulation_speed=simulation.get("speed", 1.0),
+        dry_run=simulation.get("dry_run", False),
+        custom_instructions=raw.get("custom_instructions", ""),
+    )
+
+
+def start_orchestrator(
+    dry_run: bool = False,
+    simulate: bool = False,
+    event_path: str | None = None,
+) -> None:
     import logging
     import asyncio
     from app.agents.orchestrator import DJOrchestrator
@@ -18,11 +67,12 @@ def start_orchestrator(dry_run: bool = False, simulate: bool = False) -> None:
     
     async def run():
         orchestrator = DJOrchestrator()
-        # Default event config
-        event_config = EventConfig(
-            event_type="college_party",
-            target_energy=0.85
+        event_config = (
+            event_config_from_file(event_path)
+            if event_path
+            else EventConfig(event_type="college_party", starting_vibe="party")
         )
+        event_config.dry_run = dry_run or simulate or event_config.dry_run
         await orchestrator.start(event_config)
         
         while True:
@@ -45,11 +95,8 @@ def main(dashboard, run_streamlit, debug, api, model_server, run_all, dry_run, e
     """AI DJ System Entry Point"""
     setup_logging()
     if run_streamlit:
-        print("Launching Guest API on port 8003...")
-        api_proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.api.guest_api:app", "--port", "8003"])
         print("Launching Streamlit Dashboard...")
         subprocess.run([sys.executable, "-m", "streamlit", "run", "app/ui/streamlit_app.py"])
-        api_proc.terminate()
         return
     if run_all:
         print("Launching all consoles in separate windows...")
@@ -67,7 +114,7 @@ def main(dashboard, run_streamlit, debug, api, model_server, run_all, dry_run, e
             subprocess.Popen(['xterm', '-e', 'python -m app --api'])
             
         # Start orchestrator in the main process
-        start_orchestrator(dry_run, simulate)
+        start_orchestrator(dry_run, simulate, event)
         return
     
     if model_server:
@@ -85,7 +132,11 @@ def main(dashboard, run_streamlit, debug, api, model_server, run_all, dry_run, e
         dashboard = True
 
     # Start orchestrator in background
-    orch_thread = threading.Thread(target=start_orchestrator, args=(dry_run, simulate), daemon=True)
+    orch_thread = threading.Thread(
+        target=start_orchestrator,
+        args=(dry_run, simulate, event),
+        daemon=True,
+    )
     orch_thread.start()
 
     if dashboard:
